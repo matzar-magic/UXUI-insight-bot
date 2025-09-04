@@ -13,6 +13,7 @@ from bot.db.database import (add_user, get_user_stats, update_user_stats,
 from bot.config import load_config
 import os
 import asyncio
+from aiogram.types import FSInputFile
 from datetime import datetime
 
 # Глобальный словарь для хранения следующих вопросов для пользователей
@@ -532,14 +533,36 @@ async def send_question(message, question_data, caption):
     # Формируем полный текст вопроса (весь вопросный блок как есть)
     full_question_text = f"{caption}\n\n{question_block}"
 
+    # Отладочная информация
+    print(f"Попытка отправить вопрос {question_id}")
+    print(f"Путь к изображению: {image_path}")
+    if image_path:
+        print(f"Изображение существует: {os.path.exists(image_path)}")
+        print(f"Размер изображения: {os.path.getsize(image_path) if os.path.exists(image_path) else 'N/A'} bytes")
+
     try:
         if image_path and os.path.exists(image_path):
-            with open(image_path, 'rb') as photo:
-                await message.answer_photo(photo=photo, caption=full_question_text, reply_markup=keyboard)
+            print(f"Отправляем изображение: {image_path}")
+            # Правильное использование InputFile
+            from aiogram.types import InputFile
+            photo = FSInputFile(image_path)
+            msg = await message.answer_photo(
+                photo=photo,
+                caption=full_question_text,
+                reply_markup=keyboard
+            )
+            print("Изображение успешно отправлено")
         else:
-            await message.answer(full_question_text, reply_markup=keyboard)
+            print("Изображение не найдено, отправляем только текст")
+            msg = await message.answer(full_question_text, reply_markup=keyboard)
     except Exception as e:
-        await message.answer(full_question_text, reply_markup=keyboard)
+        print(f"Ошибка при отправке изображения: {e}")
+        print(f"Тип ошибки: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+        msg = await message.answer(full_question_text, reply_markup=keyboard)
+
+    return msg
 
 
 async def handle_answer(callback_query: types.CallbackQuery):

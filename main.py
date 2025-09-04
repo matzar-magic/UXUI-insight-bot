@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import os
 from aiogram import Bot, Dispatcher
 from bot.config import load_config  # Правильный импорт
 from bot.handlers import register_handlers
@@ -21,10 +22,31 @@ async def main():
     # Регистрация обработчиков
     register_handlers(dp)
 
-    # Инициализация базы данных (без удаления старых данных)
+    # Инициализация базы данных
     from bot.db.database import create_tables, load_questions_from_fs
-    create_tables()  # Теперь не удаляет старые данные
-    load_questions_from_fs()  # Теперь только добавляет новые вопросы
+    create_tables()
+
+    # Загружаем вопросы с подробным выводом
+    print("=" * 50)
+    print("Начинаем загрузку вопросов...")
+    load_questions_from_fs()
+    print("Загрузка вопросов завершена")
+    print("=" * 50)
+
+    # Проверяем, что изображения существуют
+    from bot.db.database import db_connect
+    conn = db_connect()
+    cursor = conn.cursor()
+    cursor.execute('SELECT question_id, image_path FROM questions WHERE image_path IS NOT NULL')
+    questions_with_images = cursor.fetchall()
+    conn.close()
+
+    print(f"Найдено вопросов с изображениями: {len(questions_with_images)}")
+    for question_id, image_path in questions_with_images:
+        exists = os.path.exists(image_path) if image_path else False
+        print(f"Вопрос {question_id}: {image_path} - {'существует' if exists else 'не существует'}")
+
+    print("=" * 50)
 
     # Настройка планировщика для ежедневных вопросов
     scheduler = setup_scheduler(bot)

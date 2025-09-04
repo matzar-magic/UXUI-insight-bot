@@ -8,6 +8,7 @@ from bot.db.database import get_user_stats, get_questions_by_topic, get_question
     update_user_topic_progress, mark_topic_completed
 from bot.config import load_config
 import os
+from aiogram.types import FSInputFile
 
 config = load_config()
 
@@ -44,13 +45,29 @@ async def send_question_to_user(bot, user_id, question_data, caption):
     # Формируем полный текст вопроса (весь вопросный блок как есть)
     full_question_text = f"{caption}\n\n{question_block}"
 
+    # Отладочная информация
+    print(f"Попытка отправить вопрос {question_id} пользователю {user_id}")
+    print(f"Путь к изображению: {image_path}")
+    if image_path:
+        print(f"Изображение существует: {os.path.exists(image_path)}")
+
     try:
         if image_path and os.path.exists(image_path):
-            with open(image_path, 'rb') as photo:
-                await bot.send_photo(chat_id=user_id, photo=photo, caption=full_question_text, reply_markup=keyboard)
+            print(f"Отправляем изображение: {image_path}")
+            # Правильное использование InputFile
+            from aiogram.types import InputFile
+            photo = FSInputFile(image_path)
+            await bot.send_photo(
+                chat_id=user_id,
+                photo=photo,
+                caption=full_question_text,
+                reply_markup=keyboard
+            )
         else:
+            print("Изображение не найдено, отправляем только текст")
             await bot.send_message(chat_id=user_id, text=full_question_text, reply_markup=keyboard)
     except Exception as e:
+        print(f"Ошибка отправки вопроса пользователю {user_id}: {e}")
         await bot.send_message(chat_id=user_id, text=full_question_text, reply_markup=keyboard)
 
 

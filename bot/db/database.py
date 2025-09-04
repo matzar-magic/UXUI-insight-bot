@@ -93,15 +93,11 @@ def load_questions_from_fs():
         print(f"Проверяем категорию: {category_path}")
 
         if os.path.exists(category_path):
-            # Ищем все файлы (не только .txt)
-            all_files = [f for f in os.listdir(category_path) if os.path.isfile(os.path.join(category_path, f))]
-            # Исключаем файлы с известными расширениями изображений
-            image_extensions = ['.png', '.jpg', '.jpeg', '.webp']
-            question_files = [f for f in all_files if not any(f.endswith(ext) for ext in image_extensions)]
+            # Ищем все .txt файлы
+            txt_files = [f for f in os.listdir(category_path) if f.endswith('.txt')]
+            print(f"Найдено .txt файлов в {category}: {len(txt_files)}")
 
-            print(f"Найдено файлов в {category}: {len(question_files)}")
-
-            for file_name in question_files:
+            for file_name in txt_files:
                 try:
                     file_path = os.path.join(category_path, file_name)
                     print(f"Обрабатываем файл: {file_name}")
@@ -114,33 +110,41 @@ def load_questions_from_fs():
                         print(f"❌ Файл {file_name} имеет неправильный формат (частей: {len(parts)})")
                         continue
 
-                    # Первая часть - вопрос и варианты ответов (весь текст до ;)
+                    # Первая часть - вопрос и варианты ответов
                     question_block = parts[0].strip()
 
-                    # Остальные части
+                    # Вторая часть - количество кнопок
                     try:
                         buttons_count = int(parts[1].strip())
                     except ValueError:
                         print(f"❌ Ошибка в файле {file_name}: buttons_count должен быть числом")
                         continue
 
+                    # Третья часть - правильный ответ
                     correct_option = parts[2].strip().lower()
-                    explanation = parts[3].strip()
 
                     # Проверяем корректность correct_option
                     if correct_option not in ['a', 'b', 'c', 'd']:
                         print(f"❌ Ошибка в файле {file_name}: correct_option должен быть a, b, c или d")
                         continue
 
-                    # Ищем изображение
-                    base_name = os.path.splitext(file_path)[0]
+                    # Четвертая часть - объяснение
+                    explanation = parts[3].strip()
+
+                    # Ищем изображение с тем же именем
+                    base_name = os.path.splitext(file_name)[0]
                     image_path = None
+
+                    # Проверяем все возможные расширения изображений
                     for ext in ['.png', '.jpg', '.jpeg', '.webp']:
-                        if os.path.exists(base_name + ext):
-                            image_path = base_name + ext
+                        potential_image = os.path.join(category_path, base_name + ext)
+                        if os.path.exists(potential_image):
+                            # Сохраняем абсолютный путь к изображению
+                            image_path = potential_image
+                            print(f"Найдено изображение: {image_path}")
                             break
 
-                    # Сохраняем весь вопросный блок как есть
+                    # Сохраняем вопрос в базу
                     cursor.execute('''INSERT INTO questions 
                                    (category, question_text, image_path, option_a, option_b, option_c, option_d, buttons_count, correct_option, explanation)
                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
