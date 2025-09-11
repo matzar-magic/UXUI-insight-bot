@@ -9,6 +9,7 @@ from bot.db.database import get_user_stats, get_questions_by_topic, get_question
 from bot.config import load_config
 import os
 from aiogram.types import FSInputFile
+from pytz import timezone
 
 config = load_config()
 
@@ -164,10 +165,12 @@ def setup_scheduler(bot: Bot):
     """Настраивает планировщик для ежедневной отправки вопросов"""
     scheduler = AsyncIOScheduler()
 
-    # Отправка вопросов каждый день в 14:00
+    # Явно указываем московское время
+    moscow_tz = timezone('Europe/Moscow')
+
     scheduler.add_job(
         send_daily_question,
-        trigger=CronTrigger(hour=14, minute=0),
+        trigger=CronTrigger(hour=14, minute=17, timezone=moscow_tz),
         args=[bot],
         id='daily_question'
     )
