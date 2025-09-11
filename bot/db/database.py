@@ -364,3 +364,26 @@ def get_user_answered_questions_count(user_id, topic):
     count = cursor.fetchone()[0]
     conn.close()
     return count
+
+
+def reset_user_progress(user_id):
+    """Сбрасывает прогресс пользователя"""
+    conn = db_connect()
+    cursor = conn.cursor()
+
+    # Сбрасываем статистику
+    cursor.execute('''UPDATE users 
+                   SET total_correct = 0, 
+                       current_topic = 'typography',
+                       current_topic_progress = 0,
+                       completed_topics = ''
+                   WHERE user_id = ?''', (user_id,))
+
+    # Удаляем историю ответов
+    cursor.execute('DELETE FROM user_answered_questions WHERE user_id = ?', (user_id,))
+
+    # Удаляем дневной прогресс
+    cursor.execute('DELETE FROM daily_progress WHERE user_id = ?', (user_id,))
+
+    conn.commit()
+    conn.close()

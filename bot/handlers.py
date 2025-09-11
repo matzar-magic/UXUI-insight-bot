@@ -15,6 +15,7 @@ import os
 import asyncio
 from aiogram.types import FSInputFile
 from datetime import datetime
+from bot.db.database import reset_user_progress
 
 # Глобальный словарь для хранения следующих вопросов для пользователей
 user_next_questions = {}
@@ -111,6 +112,7 @@ async def start_command(message: types.Message):
         "Используйте команды:\n"
         "/stats - ваша статистика\n"
         "/today - получить сегодняшние вопросы\n"
+        "/reset_progress - сбросить прогресс\n"
     )
 
     # Добавляем команды для администратора
@@ -391,26 +393,49 @@ async def handle_broadcast_message(message: types.Message):
     # Отправляем сообщение о начале рассылки
     progress_msg = await message.answer(f"✉️ Начинаю рассылку сообщения для {total_users} пользователей...")
 
-    # Отправляем сообщение всем пользователям
-    for user_id in users:
+    # Функция для отправки сообщения пользователю
+    async def send_to_user(user_id):
         try:
-            # Пытаемся отправить копию сообщения
             if message.text:
                 await message.bot.send_message(user_id, message.text)
-            elif message.caption:
-                if message.photo:
-                    await message.bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption)
-                elif message.video:
-                    await message.bot.send_video(user_id, message.video.file_id, caption=message.caption)
-                elif message.document:
-                    await message.bot.send_document(user_id, message.document.file_id, caption=message.caption)
-            successful += 1
+            elif message.photo:
+                await message.bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption)
+            elif message.video:
+                await message.bot.send_video(user_id, message.video.file_id, caption=message.caption)
+            elif message.document:
+                await message.bot.send_document(user_id, message.document.file_id, caption=message.caption)
+            elif message.audio:
+                await message.bot.send_audio(user_id, message.audio.file_id, caption=message.caption)
+            elif message.voice:
+                await message.bot.send_voice(user_id, message.voice.file_id)
+            elif message.video_note:
+                await message.bot.send_video_note(user_id, message.video_note.file_id)
+            elif message.sticker:
+                await message.bot.send_sticker(user_id, message.sticker.file_id)
+            elif message.animation:
+                await message.bot.send_animation(user_id, message.animation.file_id, caption=message.caption)
+            elif message.media_group_id:
+                # Для медиагрупп используем копирование медиа
+                media = message.media_group.copy()
+                await message.bot.send_media_group(user_id, media)
+            else:
+                # Если тип сообщения не поддерживается, отправляем уведомление
+                await message.bot.send_message(user_id, "❌ Неподдерживаемый тип сообщения в рассылке")
+                return False
+            return True
         except Exception as e:
             print(f"Ошибка отправки сообщения пользователю {user_id}: {e}")
+            return False
+
+    # Отправляем сообщение всем пользователям
+    for user_id in users:
+        if await send_to_user(user_id):
+            successful += 1
+        else:
             failed += 1
 
         # Обновляем прогресс каждые 10 отправок
-        if successful % 10 == 0:
+        if (successful + failed) % 10 == 0:
             try:
                 await progress_msg.edit_text(
                     f"✉️ Рассылка в процессе...\n"
@@ -708,10 +733,108 @@ def register_handlers(dp):
     dp.message.register(start_command, Command('start'))
     dp.message.register(stats_command, Command('stats'))
     dp.message.register(today_command, Command('today'))
-    dp.message.register(letter_command, Command('letter'))  # Добавляем команду letter
-    dp.message.register(out_command, Command('out'))  # Добавляем команду out
+    dp.message.register(reset_progress_command, Command('reset_progress'))  # Новый обработчик
+    dp.message.register(letter_command, Command('letter'))
+    dp.message.register(out_command, Command('out'))
     dp.callback_query.register(handle_answer, F.data.startswith('answer_'))
     dp.callback_query.register(check_subscription_callback, F.data == "check_subscription")
+    dp.callback_query.register(handle_reset_confirmation, F.data.startswith('reset_'))  # Новый обработчик
 
     # Добавляем обработчик для сообщений (должен быть последним)
     dp.message.register(handle_broadcast_message, F.chat.type == "private")
+
+
+# Глобальный словарь для отслеживания состояний сброса прогресса
+user_reset_states = {}
+
+
+async def reset_progress_command(message: types.Message):
+    # Проверяем подписку
+    is_subscribed = await check_subscription(message.from_user.id, message.bot)
+    if not is_subscribed:
+        await ask_for_subscription(message)
+        return
+
+    user_id = message.from_user.id
+
+    # Удаляем сообщение с командой
+    try:
+        await message.delete()
+    except:
+        pass
+
+    # Создаем клавиатуру с подтверждением
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"reset_confirm_{user_id}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"reset_cancel_{user_id}")]
+    ])
+
+    # Отправляем сообщение с подтверждением
+    msg = await message.answer(
+        "⚠️ Вы уверены, что хотите сбросить весь прогресс?\n\n"
+        "Это действие нельзя отменить! Вы потеряете:\n"
+        "• Все правильные ответы\n"
+        "• Прогресс по текущей теме\n"
+        "• Пройденные темы\n"
+        "• Историю ответов",
+        reply_markup=keyboard
+    )
+
+    # Сохраняем ID сообщения для возможного удаления
+    user_reset_states[user_id] = msg.message_id
+
+
+async def handle_reset_confirmation(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    data = callback_query.data.split('_')
+    action = data[1]
+    target_user_id = int(data[2])
+
+    # Проверяем, что пользователь подтверждает свой собственный сброс
+    if user_id != target_user_id:
+        await callback_query.answer("❌ Вы не можете подтвердить сброс для другого пользователя.", show_alert=True)
+        return
+
+    await callback_query.answer()
+
+    if action == "confirm":
+        # Выполняем сброс прогресса
+        reset_user_progress(user_id)
+
+        # Удаляем сообщение с подтверждением
+        if user_id in user_reset_states:
+            try:
+                await callback_query.bot.delete_message(chat_id=user_id, message_id=user_reset_states[user_id])
+            except:
+                pass
+            del user_reset_states[user_id]
+
+        # Отправляем подтверждение сброса
+        confirmation_msg = await callback_query.message.answer(
+            "✅ Прогресс успешно сброшен!\n\n"
+            "Теперь вы начинаете с начала обучения."
+        )
+
+        # Удаляем сообщение через 5 секунд
+        asyncio.create_task(delete_message_after(confirmation_msg, 5))
+
+    elif action == "cancel":
+        # Отменяем сброс
+        if user_id in user_reset_states:
+            try:
+                await callback_query.bot.delete_message(chat_id=user_id, message_id=user_reset_states[user_id])
+            except:
+                pass
+            del user_reset_states[user_id]
+
+        # Отправляем сообщение об отмене
+        cancel_msg = await callback_query.message.answer("❌ Сброс прогресса отменен.")
+
+        # Удаляем сообщение через 5 секунд
+        asyncio.create_task(delete_message_after(cancel_msg, 5))
+
+    # Удаляем исходное сообщение с кнопками
+    try:
+        await callback_query.message.delete()
+    except:
+        pass

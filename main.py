@@ -1,8 +1,10 @@
 import logging
 import asyncio
 import os
+import aiohttp
 from aiogram import Bot, Dispatcher
-from bot.config import load_config  # Правильный импорт
+from aiogram.client.session.aiohttp import AiohttpSession
+from bot.config import load_config
 from bot.handlers import register_handlers
 from bot.scheduler import setup_scheduler
 
@@ -11,12 +13,39 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+async def test_proxy_connection():
+    """Тестируем подключение через прокси"""
+    test_url = "https://api.telegram.org"
+    proxy_url = "http://proxy.server:3128"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(test_url, proxy=proxy_url, timeout=10) as response:
+                logger.info(f"Прокси работает, статус: {response.status}")
+                return True
+    except Exception as e:
+        logger.error(f"Ошибка подключения через прокси: {e}")
+        return False
+
+
 async def main():
     # Загрузка конфигурации
     config = load_config()
 
-    # Создаем объекты бота и диспетчера
-    bot = Bot(token=config.TOKEN)
+    # Тестируем подключение через прокси
+    proxy_works = await test_proxy_connection()
+
+    if proxy_works:
+        # Используем прокси
+        proxy_url = "http://proxy.server:3128"
+        logger.info(f"Используем прокси: {proxy_url}")
+        session = AiohttpSession(proxy=proxy_url)
+        bot = Bot(token=config.TOKEN, session=session)
+    else:
+        # Пробуем прямое подключение
+        logger.warning("Прокси недоступен, пробуем прямое подключение")
+        bot = Bot(token=config.TOKEN)
+
     dp = Dispatcher()
 
     # Регистрация обработчиков
@@ -25,41 +54,35 @@ async def main():
     # Инициализация базы данных
     from bot.db.database import create_tables, load_questions_from_fs
     create_tables()
-
-    # Загружаем вопросы с подробным выводом
-    print("=" * 50)
-    print("Начинаем загрузку вопросов...")
     load_questions_from_fs()
-    print("Загрузка вопросов завершена")
-    print("=" * 50)
-
-    # Проверяем, что изображения существуют
-    from bot.db.database import db_connect
-    conn = db_connect()
-    cursor = conn.cursor()
-    cursor.execute('SELECT question_id, image_path FROM questions WHERE image_path IS NOT NULL')
-    questions_with_images = cursor.fetchall()
-    conn.close()
-
-    print(f"Найдено вопросов с изображениями: {len(questions_with_images)}")
-    for question_id, image_path in questions_with_images:
-        exists = os.path.exists(image_path) if image_path else False
-        print(f"Вопрос {question_id}: {image_path} - {'существует' if exists else 'не существует'}")
-
-    print("=" * 50)
 
     # Настройка планировщика для ежедневных вопросов
     scheduler = setup_scheduler(bot)
 
-    # Запуск бота
-    logger.info("Бот UXUI_insight_bot запущен и готов к работе.")
-    logger.info("Ежедневные вопросы будут отправляться в 14:00")
+    # Запуск бота с обработкой сетевых ошибок
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            logger.info("Бот UXUI_insight_bot запущен и готов к работе.")
+            logger.info("Ежедневные вопросы будут отправляться в 14:00")
 
-    try:
-        await dp.start_polling(bot)
-    finally:
-        if scheduler:
-            scheduler.shutdown()
+            await dp.start_polling(bot)
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                logger.error(f"Ошибка подключения (попытка {attempt + 1}/{max_retries}): {e}")
+                logger.info(f"Повторная попытка через {wait_time} секунд...")
+                await asyncio.sleep(wait_time)
+
+                # При последней попытке пробуем альтернативный метод
+                if attempt == max_retries - 2:
+                    logger.info("Пробуем альтернативный метод подключения...")
+                    # Можно попробовать другие прокси или методы здесь
+            else:
+                logger.error(f"Не удалось подключиться после {max_retries} попыток")
+                # Здесь можно добавить дополнительные методы обработки ошибок
+                raise
 
 
 if __name__ == "__main__":
