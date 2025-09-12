@@ -1,0 +1,61 @@
+-- Таблица пользователей
+CREATE TABLE IF NOT EXISTS users (
+    user_id BIGINT PRIMARY KEY,
+    username VARCHAR(255),
+    total_correct INT DEFAULT 0,
+    current_topic VARCHAR(50) DEFAULT 'typography',
+    current_topic_progress INT DEFAULT 0,
+    completed_topics TEXT,
+    role VARCHAR(20) DEFAULT 'user',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Таблица вопросов
+CREATE TABLE IF NOT EXISTS questions (
+    question_id INT AUTO_INCREMENT PRIMARY KEY,
+    category VARCHAR(50) NOT NULL,
+    question_text TEXT NOT NULL,
+    image_path TEXT,
+    option_a TEXT,
+    option_b TEXT,
+    option_c TEXT,
+    option_d TEXT,
+    buttons_count INT NOT NULL,
+    correct_option CHAR(1) NOT NULL,
+    explanation TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Ежедневный прогресс
+CREATE TABLE IF NOT EXISTS daily_progress (
+    user_id BIGINT,
+    date DATE,
+    questions_asked INT DEFAULT 0,
+    PRIMARY KEY (user_id, date),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Отвеченные вопросы
+CREATE TABLE IF NOT EXISTS user_answered_questions (
+    user_id BIGINT,
+    question_id INT,
+    PRIMARY KEY (user_id, question_id),
+    answered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Показать все таблицы
+SHOW TABLES;
+
+-- Посмотреть структуру конкретной таблицы
+DESCRIBE users;
+DESCRIBE questions;
+
+-- Посмотреть всех пользователей
+SELECT * FROM users;
+
+-- Посмотреть вопросы
+SELECT * FROM questions;
+
+-- Посмотреть прогресс пользователей
+SELECT * FROM daily_progress;
