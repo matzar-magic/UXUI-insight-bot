@@ -170,7 +170,7 @@ def setup_scheduler(bot: Bot):
 
     scheduler.add_job(
         send_daily_question,
-        trigger=CronTrigger(hour=14, minute=25, timezone=moscow_tz),
+        trigger=CronTrigger(hour=11, minute=00, timezone=moscow_tz),
         args=[bot],
         id='daily_question'
     )
