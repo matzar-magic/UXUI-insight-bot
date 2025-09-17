@@ -24,6 +24,15 @@ async def check_subscription(user_id, bot):
         return False
 
 
+async def send_admin_notification(bot: Bot):
+    """Отправляет уведомление администратору"""
+    try:
+        await bot.send_message(chat_id=config.ADMIN_ID, text="Всё гуд! ✅")
+        print(f"Уведомление отправлено администратору {config.ADMIN_ID}")
+    except Exception as e:
+        print(f"Ошибка отправки уведомления администратору: {e}")
+
+
 async def send_question_to_user(bot, user_id, question_data, caption):
     """Отправляет вопрос пользователю по ID"""
     # Распаковываем 12 полей вместо 11
@@ -151,17 +160,26 @@ async def send_daily_question(bot: Bot):
 
 
 def setup_scheduler(bot: Bot):
-    """Настраивает планировщик для ежедневной отправки вопросов"""
+    """Настраивает планировщик для ежедневной отправки вопросов и уведомлений"""
     scheduler = AsyncIOScheduler()
 
     # Явно указываем московское время
     moscow_tz = timezone('Europe/Moscow')
 
+    # Ежедневные вопросы в 14:00
     scheduler.add_job(
         send_daily_question,
         trigger=CronTrigger(hour=11, minute=00, timezone=moscow_tz),
         args=[bot],
         id='daily_question'
+    )
+
+    # Уведомление администратору в 13:00
+    scheduler.add_job(
+        send_admin_notification,
+        trigger=CronTrigger(hour=10, minute=00, timezone=moscow_tz),
+        args=[bot],
+        id='admin_notification'
     )
 
     scheduler.start()
