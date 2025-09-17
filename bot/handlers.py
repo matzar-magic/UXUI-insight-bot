@@ -147,7 +147,8 @@ async def stats_command(message: types.Message):
     daily_progress = get_user_daily_progress(user_id)
 
     if stats:
-        total_correct, current_topic, progress, completed_topics, user_role = stats
+        # Теперь stats содержит 6 значений вместо 5
+        total_correct, current_topic, progress, completed_topics, user_role, _ = stats
 
         # Получаем количество завершенных тем
         completed_count = len(completed_topics.split(',')) if completed_topics else 0

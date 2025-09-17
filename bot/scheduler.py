@@ -160,7 +160,7 @@ async def send_daily_question(bot: Bot):
 
 
 def setup_scheduler(bot: Bot):
-    """Настраивает планировщик для ежедневной отправки вопросов и уведомлений"""
+    """Настраивает планировщик для ежедневной отправки вопросов"""
     scheduler = AsyncIOScheduler()
 
     # Явно указываем московское время
@@ -180,6 +180,13 @@ def setup_scheduler(bot: Bot):
         trigger=CronTrigger(hour=10, minute=00, timezone=moscow_tz),
         args=[bot],
         id='admin_notification'
+    )
+
+    # Сброс прогреска каждый день в 03:00
+    scheduler.add_job(
+        reset_daily_progress_if_needed,
+        trigger=CronTrigger(hour=0, minute=0, timezone=moscow_tz),
+        id='reset_progress'
     )
 
     scheduler.start()

@@ -118,13 +118,15 @@ def get_user_stats(user_id):
             (user_id,))
         result = cursor.fetchone()
         if result:
-            return result
+            # Проверяем актуальность дневного прогресса
+            daily_progress = get_user_daily_progress(user_id)
+            return result + (daily_progress,)
         else:
             add_user(user_id, "unknown")
-            return (0, 'typography', 0, '', 'user')
+            return (0, 'typography', 0, '', 'user', 0)
     except Error as e:
         print(f"Ошибка получения статистики: {e}")
-        return (0, 'typography', 0, '', 'user')
+        return (0, 'typography', 0, '', 'user', 0)
     finally:
         cursor.close()
         conn.close()
@@ -333,7 +335,7 @@ def update_user_daily_progress(user_id):
 
 
 def reset_daily_progress_if_needed():
-    """Сбрасывает прогресс если наступил новый день"""
+    """Сбрасывает прогресс ТОЛЬКО если наступил новый день"""
     conn = db_connect()
     if not conn:
         return
@@ -341,9 +343,76 @@ def reset_daily_progress_if_needed():
     cursor = conn.cursor()
     try:
         today = datetime.now().strftime('%Y-%m-%d')
-        cursor.execute('DELETE FROM daily_progress WHERE date != %s', (today,))
+
+        # Проверяем, есть ли записи за другие дни
+        cursor.execute('SELECT DISTINCT date FROM daily_progress WHERE date != %s', (today,))
+        other_days = cursor.fetchall()
+
+        if other_days:
+            # Удаляем записи за предыдущие дни (кроме сегодняшнего)
+            cursor.execute('DELETE FROM daily_progress WHERE date != %s', (today,))
+            print(f"Удалены записи прогресса за другие дни: {[day[0] for day in other_days]}")
+        else:
+            print("Нет записей прогресса за другие дни для удаления")
+
     except Error as e:
         print(f"Ошибка сброса дневного прогресса: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def check_data_integrity():
+    """Проверяет целостность данных при запуске"""
+    conn = db_connect()
+    if not conn:
+        return
+
+    cursor = conn.cursor()
+    try:
+        # Проверяем, что daily_progress не превышает лимит в 5 вопросов
+        cursor.execute('''
+            UPDATE daily_progress 
+            SET questions_asked = LEAST(questions_asked, 5)
+            WHERE questions_asked > 5
+        ''')
+
+        # Проверяем, что прогресс по теме не превышает максимальное количество вопросов
+        cursor.execute('''
+            UPDATE users u
+            JOIN (
+                SELECT user_id, current_topic, 
+                       COUNT(*) as max_questions
+                FROM questions
+                GROUP BY category
+            ) q ON u.current_topic = q.category
+            SET u.current_topic_progress = LEAST(u.current_topic_progress, q.max_questions)
+            WHERE u.current_topic_progress > q.max_questions
+        ''')
+
+        conn.commit()
+        print("✅ Проверка целостности данных выполнена")
+    except Error as e:
+        print(f"Ошибка проверки целостности данных: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def is_questions_table_empty():
+    """Проверяет, пуста ли таблица вопросов"""
+    conn = db_connect()
+    if not conn:
+        return True
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT COUNT(*) FROM questions')
+        count = cursor.fetchone()[0]
+        return count == 0
+    except Error as e:
+        print(f"Ошибка проверки таблицы вопросов: {e}")
+        return True
     finally:
         cursor.close()
         conn.close()
