@@ -538,11 +538,12 @@ async def send_next_question(message, user_id):
 
 async def send_question(message, question_data, caption):
     """Отправляет один вопрос"""
+    # Распаковываем 12 полей вместо 11
     (question_id, category, question_block, image_path,
      option_a, option_b, option_c, option_d,
-     buttons_count, correct_option, explanation) = question_data
+     buttons_count, correct_option, explanation, created_at) = question_data  # Добавлено created_at
 
-    # Создаем клавиатуру с кнопками a, b, c, d в зависимости от buttons_count
+    # Остальной код без изменений...
     keyboard_buttons = []
     letters = ['a', 'b', 'c', 'd']
 
@@ -552,39 +553,22 @@ async def send_question(message, question_data, caption):
                 InlineKeyboardButton(text=letters[i], callback_data=f"answer_{question_id}_{letters[i]}"))
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-    # Размещаем кнопки в ряд
     keyboard.inline_keyboard.append(keyboard_buttons)
 
-    # Формируем полный текст вопроса (весь вопросный блок как есть)
     full_question_text = f"{caption}\n\n{question_block}"
-
-    # Отладочная информация
-    print(f"Попытка отправить вопрос {question_id}")
-    print(f"Путь к изображению: {image_path}")
-    if image_path:
-        print(f"Изображение существует: {os.path.exists(image_path)}")
-        print(f"Размер изображения: {os.path.getsize(image_path) if os.path.exists(image_path) else 'N/A'} bytes")
 
     try:
         if image_path and os.path.exists(image_path):
-            print(f"Отправляем изображение: {image_path}")
-            # Правильное использование InputFile
-            from aiogram.types import InputFile
             photo = FSInputFile(image_path)
             msg = await message.answer_photo(
                 photo=photo,
                 caption=full_question_text,
                 reply_markup=keyboard
             )
-            print("Изображение успешно отправлено")
         else:
-            print("Изображение не найдено, отправляем только текст")
             msg = await message.answer(full_question_text, reply_markup=keyboard)
     except Exception as e:
-        print(f"Ошибка при отправке изображения: {e}")
-        print(f"Тип ошибки: {type(e).__name__}")
-        import traceback
-        traceback.print_exc()
+        print(f"Ошибка при отправке вопроса: {e}")
         msg = await message.answer(full_question_text, reply_markup=keyboard)
 
     return msg
@@ -612,8 +596,10 @@ async def handle_answer(callback_query: types.CallbackQuery):
     if not question_data:
         return
 
-    correct_option = question_data[9]
-    explanation = question_data[10]
+    # Распаковываем 12 полей вместо 11 (добавлено created_at)
+    (question_id, category, question_block, image_path,
+     option_a, option_b, option_c, option_d,
+     buttons_count, correct_option, explanation, created_at) = question_data
 
     is_correct = user_answer == correct_option
 
@@ -635,13 +621,13 @@ async def handle_answer(callback_query: types.CallbackQuery):
 
     # Проверяем, завершена ли текущая тема ПОСЛЕ объяснения
     stats = get_user_stats(user_id)
+    topic_completed = False
     if stats:
         total_correct, current_topic, progress, completed_topics, user_role = stats
         total_questions = get_questions_count_by_topic(current_topic)
         answered_questions = get_user_answered_questions_count(user_id, current_topic)
 
         # Если тема завершена, помечаем ее как завершенную
-        topic_completed = False
         if answered_questions >= total_questions:
             mark_topic_completed(user_id, current_topic)
             topic_completed = True
@@ -734,6 +720,7 @@ def register_handlers(dp):
     dp.message.register(stats_command, Command('stats'))
     dp.message.register(today_command, Command('today'))
     dp.message.register(reset_progress_command, Command('reset_progress'))  # Новый обработчик
+    dp.message.register(load_questions_command, Command('load_questions'))
     dp.message.register(letter_command, Command('letter'))
     dp.message.register(out_command, Command('out'))
     dp.callback_query.register(handle_answer, F.data.startswith('answer_'))
@@ -838,3 +825,30 @@ async def handle_reset_confirmation(callback_query: types.CallbackQuery):
         await callback_query.message.delete()
     except:
         pass
+
+
+async def load_questions_command(message: types.Message):
+    """Команда для загрузки вопросов в базу (только для администратора)"""
+    user_id = message.from_user.id
+
+    # Проверяем, является ли пользователь администратором
+    if str(user_id) != config.ADMIN_ID:
+        msg = await message.answer("❌ У вас нет прав для выполнения этой команды.")
+        asyncio.create_task(delete_message_after(msg, 10))
+        return
+
+    # Удаляем сообщение с командой
+    try:
+        await message.delete()
+    except:
+        pass
+
+    # Загружаем вопросы
+    from bot.db.database import load_questions_from_fs
+    load_questions_from_fs()
+
+    msg = await message.answer("✅ Вопросы загружены в базу данных!")
+    asyncio.create_task(delete_message_after(msg, 10))
+
+# Не забудьте зарегистрировать обработчик в register_handlers:
+# dp.message.register(load_questions_command, Command('load_questions'))

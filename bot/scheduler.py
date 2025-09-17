@@ -26,11 +26,12 @@ async def check_subscription(user_id, bot):
 
 async def send_question_to_user(bot, user_id, question_data, caption):
     """Отправляет вопрос пользователю по ID"""
+    # Распаковываем 12 полей вместо 11
     (question_id, category, question_block, image_path,
      option_a, option_b, option_c, option_d,
-     buttons_count, correct_option, explanation) = question_data
+     buttons_count, correct_option, explanation, created_at) = question_data  # Добавлено created_at
 
-    # Создаем клавиатуру с кнопками a, b, c, d в зависимости от buttons_count
+    # Остальной код без изменений...
     keyboard_buttons = []
     letters = ['a', 'b', 'c', 'd']
 
@@ -40,23 +41,12 @@ async def send_question_to_user(bot, user_id, question_data, caption):
                 InlineKeyboardButton(text=letters[i], callback_data=f"answer_{question_id}_{letters[i]}"))
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-    # Размещаем кнопки в ряд
     keyboard.inline_keyboard.append(keyboard_buttons)
 
-    # Формируем полный текст вопроса (весь вопросный блок как есть)
     full_question_text = f"{caption}\n\n{question_block}"
-
-    # Отладочная информация
-    print(f"Попытка отправить вопрос {question_id} пользователю {user_id}")
-    print(f"Путь к изображению: {image_path}")
-    if image_path:
-        print(f"Изображение существует: {os.path.exists(image_path)}")
 
     try:
         if image_path and os.path.exists(image_path):
-            print(f"Отправляем изображение: {image_path}")
-            # Правильное использование InputFile
-            from aiogram.types import InputFile
             photo = FSInputFile(image_path)
             await bot.send_photo(
                 chat_id=user_id,
@@ -65,7 +55,6 @@ async def send_question_to_user(bot, user_id, question_data, caption):
                 reply_markup=keyboard
             )
         else:
-            print("Изображение не найдено, отправляем только текст")
             await bot.send_message(chat_id=user_id, text=full_question_text, reply_markup=keyboard)
     except Exception as e:
         print(f"Ошибка отправки вопроса пользователю {user_id}: {e}")

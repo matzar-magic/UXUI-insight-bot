@@ -162,6 +162,29 @@ async def main():
             await asyncio.sleep(2)  # Уменьшил задержку до 2 секунд
 
 
+async def initialize_bot():
+    """Инициализирует бота и базу данных"""
+    config = load_config()
+
+    # Создаем сессию бота
+    bot = await create_bot_session()
+
+    dp = Dispatcher()
+
+    # Регистрация обработчиков
+    register_handlers(dp)
+
+    # Инициализация базы данных
+    from bot.db.database import create_tables, load_questions_from_fs
+    create_tables()
+    load_questions_from_fs()  # Добавьте эту строку
+
+    # Настройка планировщика для ежедневных вопросов
+    scheduler = setup_scheduler(bot)
+
+    return bot, dp, scheduler
+
+
 if __name__ == "__main__":
     # Бесконечный цикл с быстрым перезапуском
     while True:

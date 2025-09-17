@@ -1,8 +1,5 @@
-UXUI by Matzar studio
-
-Version: Beta
+UXUI by Matzar studio [Version: Beta]
 
 Бот в телеграм, который учит юных дизайнеров азам профессии!
-P.S. Вопросы нужно отредактировать!
 
 Создано при поддержке @matzar_studio
