@@ -283,7 +283,8 @@ async def today_command(message: types.Message):
             except:
                 pass
 
-            msg = await message.answer("❌ Вы уже ответили на 5 вопросов сегодня. Следующие вопросы будут доступны завтра.")
+            msg = await message.answer(
+                "❌ Вы уже ответили на 5 вопросов сегодня. Следующие вопросы будут доступны завтра.")
             asyncio.create_task(delete_message_after(msg, 10))
             return
 
