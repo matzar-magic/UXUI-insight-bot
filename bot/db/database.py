@@ -1,6 +1,6 @@
 # bot/db/database.py - полностью оптимизированная версия
 import mysql.connector
-from mysql.connector import Error
+from mysql.connector import Error, pooling
 import os
 from datetime import datetime
 from bot.config import load_config
@@ -16,67 +16,58 @@ user_stats_cache = {}
 subscription_check_cache = {}
 cache_lock = threading.Lock()
 
-# Пул соединений
-connection_pool = []
-max_pool_size = 5
+# Пул соединений MySQL
+connection_pool = None
 pool_lock = threading.Lock()
 
 # Время жизни кэша (в секундах)
 CACHE_TTL = 300  # 5 минут
 
 
-def cleanup_old_cache():
-    """Очищает устаревшие записи в кэшах"""
-    current_time = time.time()
-    with cache_lock:
-        # Очищаем question_count_cache
-        for topic in list(question_count_cache.keys()):
-            if current_time - question_count_cache[topic]['timestamp'] > CACHE_TTL:
-                del question_count_cache[topic]
-
-        # Очищаем user_stats_cache
-        for user_id in list(user_stats_cache.keys()):
-            if current_time - user_stats_cache[user_id]['timestamp'] > CACHE_TTL:
-                del user_stats_cache[user_id]
-
-        # Очищаем subscription_check_cache
-        for user_id in list(subscription_check_cache.keys()):
-            if current_time - subscription_check_cache[user_id]['timestamp'] > CACHE_TTL:
-                del subscription_check_cache[user_id]
-
-
-def db_connect():
-    """Устанавливает соединение с MySQL с использованием пула"""
-    with pool_lock:
-        if connection_pool:
-            return connection_pool.pop()
-
+def init_connection_pool():
+    """Инициализирует пул соединений с MySQL"""
+    global connection_pool
     try:
-        connection = mysql.connector.connect(
+        connection_pool = pooling.MySQLConnectionPool(
+            pool_name="bot_pool",
+            pool_size=3,  # Не превышаем лимит max_user_connections
+            pool_reset_session=True,
             host=config.DB_HOST,
             database=config.DB_NAME,
             user=config.DB_USER,
             password=config.DB_PASSWORD,
             port=config.DB_PORT,
-            autocommit=True,
-            pool_size=3,
-            pool_name="bot_pool",
-            pool_reset_session=True
+            autocommit=True
         )
-        return connection
+        print("✅ Пул соединений с MySQL инициализирован")
     except Error as e:
-        print(f"Ошибка подключения к MySQL: {e}")
+        print(f"❌ Ошибка инициализации пула соединений: {e}")
+        connection_pool = None
+
+
+def db_connect():
+    """Получает соединение из пула"""
+    global connection_pool
+
+    if connection_pool is None:
+        init_connection_pool()
+        if connection_pool is None:
+            return None
+
+    try:
+        return connection_pool.get_connection()
+    except Error as e:
+        print(f"❌ Ошибка получения соединения из пула: {e}")
         return None
 
 
 def db_release(conn):
-    """Возвращает соединение в пул"""
+    """Закрывает соединение (возвращает в пул)"""
     if conn:
-        with pool_lock:
-            if len(connection_pool) < max_pool_size:
-                connection_pool.append(conn)
-            else:
-                conn.close()
+        try:
+            conn.close()
+        except:
+            pass
 
 
 def execute_query(query, params=None, fetch_one=False, fetch_all=False, many=False):
@@ -100,10 +91,13 @@ def execute_query(query, params=None, fetch_one=False, fetch_all=False, many=Fal
         else:
             result = None
 
-        conn.commit()
+        if not many:  # Для executemany autocommit не работает
+            conn.commit()
         return result
     except Error as e:
-        print(f"Ошибка выполнения запроса: {e}")
+        print(f"❌ Ошибка выполнения запроса: {e}")
+        if conn:
+            conn.rollback()
         return None
     finally:
         if 'cursor' in locals() and cursor:
@@ -147,8 +141,8 @@ def create_tables():
             buttons_count INT NOT NULL,
             correct_option CHAR(1) NOT NULL,
             explanation TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_category (category)
+            source_file TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB;
 
         CREATE TABLE IF NOT EXISTS daily_progress (
@@ -466,14 +460,6 @@ def load_questions_from_fs():
         total_loaded = 0
         total_updated = 0
 
-        # Создаем временную таблицу для хранения хэшей вопросов
-        cursor.execute('''
-            CREATE TEMPORARY TABLE IF NOT EXISTS temp_question_hashes (
-                question_hash VARCHAR(64) PRIMARY KEY,
-                question_id INT
-            )
-        ''')
-
         for category in categories:
             category_path = os.path.join(questions_dir, category)
             print(f"Проверяем категорию: {category_path}")
@@ -489,7 +475,6 @@ def load_questions_from_fs():
             for file_name in txt_files:
                 try:
                     file_path = os.path.join(category_path, file_name)
-                    file_hash = hashlib.md5(file_path.encode()).hexdigest()
                     print(f"Обрабатываем файл: {file_name}")
 
                     with open(file_path, 'r', encoding='utf-8') as f:
@@ -573,7 +558,7 @@ def load_questions_from_fs():
                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
                                questions_to_insert)
 
-        # Выполняем batch обновление существующих вопросов
+        # Выполняем batch обновление существующих вопросов (БЕЗ updated_at)
         if questions_to_update:
             cursor.executemany('''UPDATE questions SET
                                question_text = %s,
@@ -603,6 +588,22 @@ def load_questions_from_fs():
         db_release(conn)
 
 
+def cleanup_old_cache():
+    """Очищает устаревшие записи в кэшах"""
+    current_time = time.time()
+
+    # Очищаем question_count_cache
+    with cache_lock:
+        for topic in list(question_count_cache.keys()):
+            if current_time - question_count_cache[topic]['timestamp'] > CACHE_TTL:
+                del question_count_cache[topic]
+
+        # Очищаем user_stats_cache
+        for user_id in list(user_stats_cache.keys()):
+            if current_time - user_stats_cache[user_id]['timestamp'] > CACHE_TTL:
+                del user_stats_cache[user_id]
+
+
 # Функция для периодической очистки кэша
 def start_cache_cleanup():
     """Запускает периодическую очистку кэша"""
@@ -619,18 +620,5 @@ def start_cache_cleanup():
 # Запускаем очистку кэша при импорте
 start_cache_cleanup()
 
-
-def cleanup_old_cache():
-    """Очищает устаревшие записи в кэшах"""
-    current_time = time.time()
-
-    # Очищаем question_count_cache
-    with cache_lock:
-        for topic in list(question_count_cache.keys()):
-            if current_time - question_count_cache[topic]['timestamp'] > CACHE_TTL:
-                del question_count_cache[topic]
-
-        # Очищаем user_stats_cache
-        for user_id in list(user_stats_cache.keys()):
-            if current_time - user_stats_cache[user_id]['timestamp'] > CACHE_TTL:
-                del user_stats_cache[user_id]
+# Инициализируем пул при импорте модуля
+init_connection_pool()
