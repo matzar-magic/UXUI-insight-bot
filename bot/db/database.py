@@ -6,6 +6,7 @@ from datetime import datetime
 from bot.config import load_config
 import threading
 import time
+import hashlib
 
 config = load_config()
 
@@ -435,7 +436,7 @@ def reset_user_progress(user_id):
 
 
 def load_questions_from_fs():
-    """Загружает вопросы из файловой системы в MySQL БД"""
+    """Загружает вопросы из файловой системы в MySQL БД с умным обновлением"""
     conn = db_connect()
     if not conn:
         print("❌ Не удалось подключиться к базе данных для загрузки вопросов")
@@ -444,9 +445,8 @@ def load_questions_from_fs():
     cursor = conn.cursor()
 
     try:
-        # Очищаем старые вопросы перед загрузкой новых
-        cursor.execute('DELETE FROM questions')
-        print("Старые вопросы удалены из базы данных")
+        # НЕ очищаем старые вопросы! Вместо этого будем обновлять/добавлять
+        print("Начинаем загрузку вопросов с проверкой существующих...")
 
         # Определяем правильный путь к папке questions
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -462,94 +462,137 @@ def load_questions_from_fs():
 
         categories = ['typography', 'coloristics', 'composition', 'ux_principles', 'ui_patterns']
         questions_to_insert = []
+        questions_to_update = []
         total_loaded = 0
+        total_updated = 0
+
+        # Создаем временную таблицу для хранения хэшей вопросов
+        cursor.execute('''
+            CREATE TEMPORARY TABLE IF NOT EXISTS temp_question_hashes (
+                question_hash VARCHAR(64) PRIMARY KEY,
+                question_id INT
+            )
+        ''')
 
         for category in categories:
             category_path = os.path.join(questions_dir, category)
             print(f"Проверяем категорию: {category_path}")
 
-            if os.path.exists(category_path):
-                # Ищем все .txt файлы
-                txt_files = [f for f in os.listdir(category_path) if f.endswith('.txt')]
-                print(f"Найдено .txt файлов в {category}: {len(txt_files)}")
+            if not os.path.exists(category_path):
+                print(f"❌ Папка категории {category} не найдена: {category_path}")
+                continue
 
-                for file_name in txt_files:
+            # Ищем все .txt файлы
+            txt_files = [f for f in os.listdir(category_path) if f.endswith('.txt')]
+            print(f"Найдено .txt файлов в {category}: {len(txt_files)}")
+
+            for file_name in txt_files:
+                try:
+                    file_path = os.path.join(category_path, file_name)
+                    file_hash = hashlib.md5(file_path.encode()).hexdigest()
+                    print(f"Обрабатываем файл: {file_name}")
+
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read().strip()
+
+                    # Разбираем содержимое файла
+                    parts = content.split(';')
+                    if len(parts) < 4:
+                        print(f"❌ Файл {file_name} имеет неправильный формат (частей: {len(parts)})")
+                        continue
+
+                    # Первая часть - вопрос и варианты ответов
+                    question_block = parts[0].strip()
+
+                    # Вторая часть - количество кнопок
                     try:
-                        file_path = os.path.join(category_path, file_name)
-                        print(f"Обрабатываем файл: {file_name}")
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            content = f.read().strip()
+                        buttons_count = int(parts[1].strip())
+                    except ValueError:
+                        print(f"❌ Ошибка в файле {file_name}: buttons_count должен быть числом")
+                        continue
 
-                        # Разбираем содержимое файла
-                        parts = content.split(';')
-                        if len(parts) < 4:
-                            print(f"❌ Файл {file_name} имеет неправильный формат (частей: {len(parts)})")
-                            continue
+                    # Третья часть - правильный ответ
+                    correct_option = parts[2].strip().lower()
 
-                        # Первая часть - вопрос и варианты ответов
-                        question_block = parts[0].strip()
+                    # Проверяем корректность correct_option
+                    if correct_option not in ['a', 'b', 'c', 'd']:
+                        print(f"❌ Ошибка в файле {file_name}: correct_option должен быть a, b, c или d")
+                        continue
 
-                        # Вторая часть - количество кнопок
-                        try:
-                            buttons_count = int(parts[1].strip())
-                        except ValueError:
-                            print(f"❌ Ошибка в файле {file_name}: buttons_count должен быть числом")
-                            continue
+                    # Четвертая часть - объяснение
+                    explanation = parts[3].strip()
 
-                        # Третья часть - правильный ответ
-                        correct_option = parts[2].strip().lower()
+                    # Ищем изображение с тем же именем
+                    base_name = os.path.splitext(file_name)[0]
+                    image_path = None
 
-                        # Проверяем корректность correct_option
-                        if correct_option not in ['a', 'b', 'c', 'd']:
-                            print(f"❌ Ошибка в файле {file_name}: correct_option должен быть a, b, c или d")
-                            continue
+                    # Проверяем все возможные расширения изображений
+                    for ext in ['.png', '.jpg', '.jpeg', '.webp']:
+                        potential_image = os.path.join(category_path, base_name + ext)
+                        if os.path.exists(potential_image):
+                            image_path = potential_image
+                            print(f"Найдено изображение: {image_path}")
+                            break
 
-                        # Четвертая часть - объяснение
-                        explanation = parts[3].strip()
+                    # Проверяем, существует ли уже этот вопрос в БД
+                    cursor.execute(
+                        'SELECT question_id FROM questions WHERE question_text = %s AND category = %s',
+                        (question_block, category)
+                    )
+                    existing_question = cursor.fetchone()
 
-                        # Ищем изображение с тем же именем
-                        base_name = os.path.splitext(file_name)[0]
-                        image_path = None
-
-                        # Проверяем все возможные расширения изображений
-                        for ext in ['.png', '.jpg', '.jpeg', '.webp']:
-                            potential_image = os.path.join(category_path, base_name + ext)
-                            if os.path.exists(potential_image):
-                                image_path = potential_image
-                                print(f"Найдено изображение: {image_path}")
-                                break
-
-                        # Добавляем вопрос в список для batch вставки
+                    if existing_question:
+                        # Обновляем существующий вопрос
+                        question_id = existing_question[0]
+                        questions_to_update.append((
+                            question_block, image_path, buttons_count,
+                            correct_option, explanation, question_id
+                        ))
+                        total_updated += 1
+                        print(f"↻ Вопрос будет обновлен (ID: {question_id}): {file_name}")
+                    else:
+                        # Добавляем новый вопрос
                         questions_to_insert.append((
                             category, question_block, image_path,
                             None, None, None, None,  # options a-d
-                            buttons_count, correct_option, explanation
+                            buttons_count, correct_option, explanation, file_path
                         ))
-
                         total_loaded += 1
-                        print(f"✓ Подготовлен вопрос из файла: {file_name}")
+                        print(f"✓ Новый вопрос подготовлен: {file_name}")
 
-                    except Exception as e:
-                        print(f"❌ Ошибка загрузки вопроса {file_name}: {e}")
-                        import traceback
-                        traceback.print_exc()
-            else:
-                print(f"❌ Папка категории {category} не найдена: {category_path}")
+                except Exception as e:
+                    print(f"❌ Ошибка загрузки вопроса {file_name}: {e}")
+                    import traceback
+                    traceback.print_exc()
 
-        # Выполняем batch вставку всех вопросов
+        # Выполняем batch вставку новых вопросов
         if questions_to_insert:
             cursor.executemany('''INSERT INTO questions
                                (category, question_text, image_path, option_a, option_b, option_c, option_d, 
-                                buttons_count, correct_option, explanation)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                                buttons_count, correct_option, explanation, source_file)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
                                questions_to_insert)
 
-            conn.commit()
-            print(f"✅ Вопросы успешно загружены в MySQL! Всего: {total_loaded}")
+        # Выполняем batch обновление существующих вопросов
+        if questions_to_update:
+            cursor.executemany('''UPDATE questions SET
+                               question_text = %s,
+                               image_path = %s,
+                               buttons_count = %s,
+                               correct_option = %s,
+                               explanation = %s,
+                               updated_at = CURRENT_TIMESTAMP
+                               WHERE question_id = %s''',
+                               questions_to_update)
 
-            # Очищаем кэш счетчиков вопросов
-            with cache_lock:
-                question_count_cache.clear()
+        conn.commit()
+        print(f"✅ Вопросы успешно обработаны в MySQL!")
+        print(f"   Новых вопросов добавлено: {total_loaded}")
+        print(f"   Существующих вопросов обновлено: {total_updated}")
+
+        # Очищаем кэш счетчиков вопросов
+        with cache_lock:
+            question_count_cache.clear()
 
     except Exception as e:
         print(f"❌ Ошибка при загрузке вопросов: {e}")

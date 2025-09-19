@@ -23,6 +23,11 @@ subscription_cache = {}
 user_topic_cache = {}
 CACHE_TTL = 300  # 5 минут
 
+# Флаг для защиты от множественного запуска рассылки
+is_sending_daily_questions = False
+is_sending_admin_notification = False
+sending_lock = asyncio.Lock()
+
 
 def cleanup_old_cache():
     """Очищает устаревшие записи в кэшах"""
@@ -106,12 +111,24 @@ async def send_question_to_user(bot, user_id, question_data, caption):
 
 
 async def send_admin_notification(bot: Bot):
-    """Отправляет уведомление администратору"""
+    """Отправляет уведомление администратору с защитой от множественного запуска"""
+    global is_sending_admin_notification
+
+    async with sending_lock:
+        if is_sending_admin_notification:
+            print("⚠️ Уведомление администратору уже отправляется, пропускаем...")
+            return
+
+        is_sending_admin_notification = True
+
     try:
         await bot.send_message(chat_id=config.ADMIN_ID, text="Всё гуд! ✅")
         print(f"Уведомление отправлено администратору {config.ADMIN_ID}")
     except Exception as e:
         print(f"Ошибка отправки уведомления администратору: {e}")
+    finally:
+        async with sending_lock:
+            is_sending_admin_notification = False
 
 
 async def process_user_questions(bot, user_id, current_topic):
@@ -185,28 +202,46 @@ async def process_user_questions(bot, user_id, current_topic):
 
 
 async def send_daily_question(bot: Bot):
-    """Отправляет ежедневный вопрос всем пользователям"""
-    # Очищаем кэш перед началом
-    subscription_cache.clear()
-    user_topic_cache.clear()
+    """Отправляет ежедневный вопрос всем пользователям с защитой от множественного запуска"""
+    global is_sending_daily_questions
 
-    # Сбрасываем прогресс за предыдущий день
-    reset_daily_progress_if_needed()
+    # Проверяем и устанавливаем флаг с блокировкой
+    async with sending_lock:
+        if is_sending_daily_questions:
+            print("⚠️ Рассылка ежедневных вопросов уже выполняется, пропускаем...")
+            return
 
-    users = get_all_users()
+        is_sending_daily_questions = True
 
-    if not users:
-        print("Нет пользователей для отправки ежедневного вопроса")
-        return
+    try:
+        # Очищаем кэш перед началом
+        subscription_cache.clear()
+        user_topic_cache.clear()
 
-    # Группируем пользователей по темам для batch обработки
-    users_by_topic = {}
-    for user_id in users:
-        # Используем кэш для тем пользователей
-        current_time = time.time()
-        if user_id in user_topic_cache:
-            if current_time - user_topic_cache[user_id]['timestamp'] < CACHE_TTL:
-                current_topic = user_topic_cache[user_id]['topic']
+        # Сбрасываем прогресс за предыдущий день
+        reset_daily_progress_if_needed()
+
+        users = get_all_users()
+
+        if not users:
+            print("Нет пользователей для отправки ежедневного вопроса")
+            return
+
+        # Группируем пользователей по темам для batch обработки
+        users_by_topic = {}
+        for user_id in users:
+            # Используем кэш для тем пользователей
+            current_time = time.time()
+            if user_id in user_topic_cache:
+                if current_time - user_topic_cache[user_id]['timestamp'] < CACHE_TTL:
+                    current_topic = user_topic_cache[user_id]['topic']
+                else:
+                    stats = get_user_stats(user_id)
+                    current_topic = stats[1] if stats else 'typography'
+                    user_topic_cache[user_id] = {
+                        'topic': current_topic,
+                        'timestamp': current_time
+                    }
             else:
                 stats = get_user_stats(user_id)
                 current_topic = stats[1] if stats else 'typography'
@@ -214,59 +249,62 @@ async def send_daily_question(bot: Bot):
                     'topic': current_topic,
                     'timestamp': current_time
                 }
-        else:
-            stats = get_user_stats(user_id)
-            current_topic = stats[1] if stats else 'typography'
-            user_topic_cache[user_id] = {
-                'topic': current_topic,
-                'timestamp': current_time
-            }
 
-        if current_topic not in users_by_topic:
-            users_by_topic[current_topic] = []
-        users_by_topic[current_topic].append(user_id)
+            if current_topic not in users_by_topic:
+                users_by_topic[current_topic] = []
+            users_by_topic[current_topic].append(user_id)
 
-    # Обрабатываем пользователей группами по темам
-    processed_users = 0
-    skipped_users = 0
+        # Обрабатываем пользователей группами по темам
+        processed_users = 0
+        skipped_users = 0
 
-    for topic, topic_users in users_by_topic.items():
-        # Получаем вопросы для темы один раз
-        question_ids = get_questions_by_topic(None, topic, len(topic_users) * 2)
+        for topic, topic_users in users_by_topic.items():
+            # Получаем вопросы для темы один раз
+            question_ids = get_questions_by_topic(None, topic, len(topic_users) * 2)
 
-        for user_id in topic_users:
-            try:
-                # Проверяем подписку с кэшированием
-                is_subscribed = await check_subscription(user_id, bot)
-                if not is_subscribed:
-                    skipped_users += 1
+            for user_id in topic_users:
+                try:
+                    # Проверяем подписку с кэшированием
+                    is_subscribed = await check_subscription(user_id, bot)
+                    if not is_subscribed:
+                        skipped_users += 1
+                        continue
+
+                    # Обрабатываем вопросы для пользователя
+                    new_topic = await process_user_questions(bot, user_id, topic)
+
+                    # Обновляем кэш, если тема изменилась
+                    if new_topic != topic:
+                        user_topic_cache[user_id] = {
+                            'topic': new_topic,
+                            'timestamp': time.time()
+                        }
+
+                    processed_users += 1
+
+                    # Небольшая пауза между пользователями для снижения нагрузки
+                    if processed_users % 10 == 0:
+                        await asyncio.sleep(0.1)
+
+                except Exception as e:
+                    print(f"Ошибка обработки пользователя {user_id}: {e}")
                     continue
 
-                # Обрабатываем вопросы для пользователя
-                new_topic = await process_user_questions(bot, user_id, topic)
+        # Очищаем кэш после обработки
+        subscription_cache.clear()
+        user_topic_cache.clear()
 
-                # Обновляем кэш, если тема изменилась
-                if new_topic != topic:
-                    user_topic_cache[user_id] = {
-                        'topic': new_topic,
-                        'timestamp': time.time()
-                    }
+        print(f"✅ Ежедневные вопросы отправлены. Обработано: {processed_users}, Пропущено: {skipped_users}")
 
-                processed_users += 1
+    except Exception as e:
+        print(f"❌ Критическая ошибка при отправке ежедневных вопросов: {e}")
+        import traceback
+        traceback.print_exc()
 
-                # Небольшая пауза между пользователями для снижения нагрузки
-                if processed_users % 10 == 0:
-                    await asyncio.sleep(0.1)
-
-            except Exception as e:
-                print(f"Ошибка обработки пользователя {user_id}: {e}")
-                continue
-
-    # Очищаем кэш после обработки
-    subscription_cache.clear()
-    user_topic_cache.clear()
-
-    print(f"✅ Ежедневные вопросы отправлены. Обработано: {processed_users}, Пропущено: {skipped_users}")
+    finally:
+        # Снимаем флаг независимо от результата
+        async with sending_lock:
+            is_sending_daily_questions = False
 
 
 def setup_scheduler(bot: Bot):
