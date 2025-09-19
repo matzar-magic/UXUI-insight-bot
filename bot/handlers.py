@@ -670,6 +670,18 @@ async def handle_answer(callback_query: types.CallbackQuery):
     else:
         response = f"❌ Неправильно \nПравильный ответ: {correct_option.lower()})\n\n{explanation}"
 
+    # ОБНОВЛЯЕМ ПРОГРЕСС ПО ТЕМЕ
+    # Получаем текущую тему пользователя
+    stats = get_user_stats(user_id)
+    if stats:
+        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+        # Увеличиваем прогресс по теме на 1
+        new_progress = progress + 1
+        execute_query(
+            'UPDATE users SET current_topic_progress = %s WHERE user_id = %s',
+            (new_progress, user_id)
+        )
+
     # Обновляем дневной прогресс
     if not update_user_daily_progress(user_id):
         # Лимит достигнут, завершаем сессию
