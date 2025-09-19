@@ -159,7 +159,7 @@ async def main():
         except Exception as e:
             logger.critical(f"Критическая ошибка в основном цикле: {e}")
             logger.info("Перезапуск бота через 2 секунды...")
-            await asyncio.sleep(2)
+            await asyncio.sleep(2)  # Уменьшил задержку до 2 секунд
 
 
 async def initialize_bot():
@@ -175,15 +175,9 @@ async def initialize_bot():
     register_handlers(dp)
 
     # Инициализация базы данных
-    from bot.db.database import create_tables, load_questions_from_fs, check_data_integrity
+    from bot.db.database import create_tables, load_questions_from_fs
     create_tables()
-
-    # Загружаем вопросы только если таблица пуста
-    if is_questions_table_empty():
-        load_questions_from_fs()
-
-    # Проверяем целостность данных (но НЕ сбрасываем текущий прогресс)
-    check_data_integrity()
+    load_questions_from_fs()  # Добавьте эту строку
 
     # Настройка планировщика для ежедневных вопросов
     scheduler = setup_scheduler(bot)
