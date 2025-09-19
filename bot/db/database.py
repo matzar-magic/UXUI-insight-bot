@@ -580,8 +580,7 @@ def load_questions_from_fs():
                                image_path = %s,
                                buttons_count = %s,
                                correct_option = %s,
-                               explanation = %s,
-                               updated_at = CURRENT_TIMESTAMP
+                               explanation = %s
                                WHERE question_id = %s''',
                                questions_to_update)
 
