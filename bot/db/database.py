@@ -1,12 +1,11 @@
-# bot/db/database.py - полностью оптимизированная версия
+# bot/db/database.py - ФИНАЛЬНАЯ исправленная версия БЕЗ пула соединений
 import mysql.connector
-from mysql.connector import Error, pooling
+from mysql.connector import Error
 import os
 from datetime import datetime
 from bot.config import load_config
 import threading
 import time
-import hashlib
 
 config = load_config()
 
@@ -16,22 +15,34 @@ user_stats_cache = {}
 subscription_check_cache = {}
 cache_lock = threading.Lock()
 
-# Пул соединений MySQL
-connection_pool = None
-pool_lock = threading.Lock()
-
 # Время жизни кэша (в секундах)
 CACHE_TTL = 300  # 5 минут
 
 
-def init_connection_pool():
-    """Инициализирует пул соединений с MySQL"""
-    global connection_pool
+def cleanup_old_cache():
+    """Очищает устаревшие записи в кэшах"""
+    current_time = time.time()
+    with cache_lock:
+        # Очищаем question_count_cache
+        for topic in list(question_count_cache.keys()):
+            if current_time - question_count_cache[topic]['timestamp'] > CACHE_TTL:
+                del question_count_cache[topic]
+
+        # Очищаем user_stats_cache
+        for user_id in list(user_stats_cache.keys()):
+            if current_time - user_stats_cache[user_id]['timestamp'] > CACHE_TTL:
+                del user_stats_cache[user_id]
+
+        # Очищаем subscription_check_cache
+        for user_id in list(subscription_check_cache.keys()):
+            if current_time - subscription_check_cache[user_id]['timestamp'] > CACHE_TTL:
+                del subscription_check_cache[user_id]
+
+
+def db_connect():
+    """Простое подключение к MySQL без пула"""
     try:
-        connection_pool = pooling.MySQLConnectionPool(
-            pool_name="bot_pool",
-            pool_size=3,  # Не превышаем лимит max_user_connections
-            pool_reset_session=True,
+        connection = mysql.connector.connect(
             host=config.DB_HOST,
             database=config.DB_NAME,
             user=config.DB_USER,
@@ -39,35 +50,10 @@ def init_connection_pool():
             port=config.DB_PORT,
             autocommit=True
         )
-        print("✅ Пул соединений с MySQL инициализирован")
+        return connection
     except Error as e:
-        print(f"❌ Ошибка инициализации пула соединений: {e}")
-        connection_pool = None
-
-
-def db_connect():
-    """Получает соединение из пула"""
-    global connection_pool
-
-    if connection_pool is None:
-        init_connection_pool()
-        if connection_pool is None:
-            return None
-
-    try:
-        return connection_pool.get_connection()
-    except Error as e:
-        print(f"❌ Ошибка получения соединения из пула: {e}")
+        print(f"❌ Ошибка подключения к MySQL: {e}")
         return None
-
-
-def db_release(conn):
-    """Закрывает соединение (возвращает в пул)"""
-    if conn:
-        try:
-            conn.close()
-        except:
-            pass
 
 
 def execute_query(query, params=None, fetch_one=False, fetch_all=False, many=False):
@@ -102,7 +88,8 @@ def execute_query(query, params=None, fetch_one=False, fetch_all=False, many=Fal
     finally:
         if 'cursor' in locals() and cursor:
             cursor.close()
-        db_release(conn)
+        if conn:
+            conn.close()
 
 
 def create_tables():
@@ -141,7 +128,6 @@ def create_tables():
             buttons_count INT NOT NULL,
             correct_option CHAR(1) NOT NULL,
             explanation TEXT,
-            source_file TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB;
 
@@ -172,7 +158,7 @@ def create_tables():
         print(f"❌ Ошибка создания таблиц: {e}")
     finally:
         cursor.close()
-        db_release(conn)
+        conn.close()
 
 
 def add_user(user_id, username):
@@ -430,7 +416,7 @@ def reset_user_progress(user_id):
 
 
 def load_questions_from_fs():
-    """Загружает вопросы из файловой системы в MySQL БД с умным обновлением"""
+    """Загружает вопросы из файловой системы в MySQL БД"""
     conn = db_connect()
     if not conn:
         print("❌ Не удалось подключиться к базе данных для загрузки вопросов")
@@ -439,8 +425,9 @@ def load_questions_from_fs():
     cursor = conn.cursor()
 
     try:
-        # НЕ очищаем старые вопросы! Вместо этого будем обновлять/добавлять
-        print("Начинаем загрузку вопросов с проверкой существующих...")
+        # Очищаем старые вопросы перед загрузкой новых
+        cursor.execute('DELETE FROM questions')
+        print("Старые вопросы удалены из базы данных")
 
         # Определяем правильный путь к папке questions
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -456,127 +443,94 @@ def load_questions_from_fs():
 
         categories = ['typography', 'coloristics', 'composition', 'ux_principles', 'ui_patterns']
         questions_to_insert = []
-        questions_to_update = []
         total_loaded = 0
-        total_updated = 0
 
         for category in categories:
             category_path = os.path.join(questions_dir, category)
             print(f"Проверяем категорию: {category_path}")
 
-            if not os.path.exists(category_path):
-                print(f"❌ Папка категории {category} не найдена: {category_path}")
-                continue
+            if os.path.exists(category_path):
+                # Ищем все .txt файлы
+                txt_files = [f for f in os.listdir(category_path) if f.endswith('.txt')]
+                print(f"Найдено .txt файлов в {category}: {len(txt_files)}")
 
-            # Ищем все .txt файлы
-            txt_files = [f for f in os.listdir(category_path) if f.endswith('.txt')]
-            print(f"Найдено .txt файлов в {category}: {len(txt_files)}")
-
-            for file_name in txt_files:
-                try:
-                    file_path = os.path.join(category_path, file_name)
-                    print(f"Обрабатываем файл: {file_name}")
-
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read().strip()
-
-                    # Разбираем содержимое файла
-                    parts = content.split(';')
-                    if len(parts) < 4:
-                        print(f"❌ Файл {file_name} имеет неправильный формат (частей: {len(parts)})")
-                        continue
-
-                    # Первая часть - вопрос и варианты ответов
-                    question_block = parts[0].strip()
-
-                    # Вторая часть - количество кнопок
+                for file_name in txt_files:
                     try:
-                        buttons_count = int(parts[1].strip())
-                    except ValueError:
-                        print(f"❌ Ошибка в файле {file_name}: buttons_count должен быть числом")
-                        continue
+                        file_path = os.path.join(category_path, file_name)
+                        print(f"Обрабатываем файл: {file_name}")
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read().strip()
 
-                    # Третья часть - правильный ответ
-                    correct_option = parts[2].strip().lower()
+                        # Разбираем содержимое файла
+                        parts = content.split(';')
+                        if len(parts) < 4:
+                            print(f"❌ Файл {file_name} имеет неправильный формат (частей: {len(parts)})")
+                            continue
 
-                    # Проверяем корректность correct_option
-                    if correct_option not in ['a', 'b', 'c', 'd']:
-                        print(f"❌ Ошибка в файле {file_name}: correct_option должен быть a, b, c или d")
-                        continue
+                        # Первая часть - вопрос и варианты ответов
+                        question_block = parts[0].strip()
 
-                    # Четвертая часть - объяснение
-                    explanation = parts[3].strip()
+                        # Вторая часть - количество кнопок
+                        try:
+                            buttons_count = int(parts[1].strip())
+                        except ValueError:
+                            print(f"❌ Ошибка в файле {file_name}: buttons_count должен быть числом")
+                            continue
 
-                    # Ищем изображение с тем же именем
-                    base_name = os.path.splitext(file_name)[0]
-                    image_path = None
+                        # Третья часть - правильный ответ
+                        correct_option = parts[2].strip().lower()
 
-                    # Проверяем все возможные расширения изображений
-                    for ext in ['.png', '.jpg', '.jpeg', '.webp']:
-                        potential_image = os.path.join(category_path, base_name + ext)
-                        if os.path.exists(potential_image):
-                            image_path = potential_image
-                            print(f"Найдено изображение: {image_path}")
-                            break
+                        # Проверяем корректность correct_option
+                        if correct_option not in ['a', 'b', 'c', 'd']:
+                            print(f"❌ Ошибка в файле {file_name}: correct_option должен быть a, b, c или d")
+                            continue
 
-                    # Проверяем, существует ли уже этот вопрос в БД
-                    cursor.execute(
-                        'SELECT question_id FROM questions WHERE question_text = %s AND category = %s',
-                        (question_block, category)
-                    )
-                    existing_question = cursor.fetchone()
+                        # Четвертая часть - объяснение
+                        explanation = parts[3].strip()
 
-                    if existing_question:
-                        # Обновляем существующий вопрос
-                        question_id = existing_question[0]
-                        questions_to_update.append((
-                            question_block, image_path, buttons_count,
-                            correct_option, explanation, question_id
-                        ))
-                        total_updated += 1
-                        print(f"↻ Вопрос будет обновлен (ID: {question_id}): {file_name}")
-                    else:
-                        # Добавляем новый вопрос
+                        # Ищем изображение с тем же именем
+                        base_name = os.path.splitext(file_name)[0]
+                        image_path = None
+
+                        # Проверяем все возможные расширения изображений
+                        for ext in ['.png', '.jpg', '.jpeg', '.webp']:
+                            potential_image = os.path.join(category_path, base_name + ext)
+                            if os.path.exists(potential_image):
+                                image_path = potential_image
+                                print(f"Найдено изображение: {image_path}")
+                                break
+
+                        # Добавляем вопрос в список для batch вставки
                         questions_to_insert.append((
                             category, question_block, image_path,
                             None, None, None, None,  # options a-d
-                            buttons_count, correct_option, explanation, file_path
+                            buttons_count, correct_option, explanation
                         ))
+
                         total_loaded += 1
-                        print(f"✓ Новый вопрос подготовлен: {file_name}")
+                        print(f"✓ Подготовлен вопрос из файла: {file_name}")
 
-                except Exception as e:
-                    print(f"❌ Ошибка загрузки вопроса {file_name}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    except Exception as e:
+                        print(f"❌ Ошибка загрузки вопроса {file_name}: {e}")
+                        import traceback
+                        traceback.print_exc()
+            else:
+                print(f"❌ Папка категории {category} не найдена: {category_path}")
 
-        # Выполняем batch вставку новых вопросов
+        # Выполняем batch вставку всех вопросов
         if questions_to_insert:
             cursor.executemany('''INSERT INTO questions
                                (category, question_text, image_path, option_a, option_b, option_c, option_d, 
-                                buttons_count, correct_option, explanation, source_file)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                                buttons_count, correct_option, explanation)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
                                questions_to_insert)
 
-        # Выполняем batch обновление существующих вопросов (БЕЗ updated_at)
-        if questions_to_update:
-            cursor.executemany('''UPDATE questions SET
-                               question_text = %s,
-                               image_path = %s,
-                               buttons_count = %s,
-                               correct_option = %s,
-                               explanation = %s
-                               WHERE question_id = %s''',
-                               questions_to_update)
+            conn.commit()
+            print(f"✅ Вопросы успешно загружены в MySQL! Всего: {total_loaded}")
 
-        conn.commit()
-        print(f"✅ Вопросы успешно обработаны в MySQL!")
-        print(f"   Новых вопросов добавлено: {total_loaded}")
-        print(f"   Существующих вопросов обновлено: {total_updated}")
-
-        # Очищаем кэш счетчиков вопросов
-        with cache_lock:
-            question_count_cache.clear()
+            # Очищаем кэш счетчиков вопросов
+            with cache_lock:
+                question_count_cache.clear()
 
     except Exception as e:
         print(f"❌ Ошибка при загрузке вопросов: {e}")
@@ -585,23 +539,7 @@ def load_questions_from_fs():
         conn.rollback()
     finally:
         cursor.close()
-        db_release(conn)
-
-
-def cleanup_old_cache():
-    """Очищает устаревшие записи в кэшах"""
-    current_time = time.time()
-
-    # Очищаем question_count_cache
-    with cache_lock:
-        for topic in list(question_count_cache.keys()):
-            if current_time - question_count_cache[topic]['timestamp'] > CACHE_TTL:
-                del question_count_cache[topic]
-
-        # Очищаем user_stats_cache
-        for user_id in list(user_stats_cache.keys()):
-            if current_time - user_stats_cache[user_id]['timestamp'] > CACHE_TTL:
-                del user_stats_cache[user_id]
+        conn.close()
 
 
 # Функция для периодической очистки кэша
@@ -620,5 +558,5 @@ def start_cache_cleanup():
 # Запускаем очистку кэша при импорте
 start_cache_cleanup()
 
-# Инициализируем пул при импорте модуля
-init_connection_pool()
+# Создаем таблицы при импорте
+create_tables()
