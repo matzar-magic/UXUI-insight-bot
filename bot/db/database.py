@@ -576,3 +576,19 @@ def start_cache_cleanup():
 
 # Запускаем очистку кэша при импорте
 start_cache_cleanup()
+
+
+def cleanup_old_cache():
+    """Очищает устаревшие записи в кэшах"""
+    current_time = time.time()
+
+    # Очищаем question_count_cache
+    with cache_lock:
+        for topic in list(question_count_cache.keys()):
+            if current_time - question_count_cache[topic]['timestamp'] > CACHE_TTL:
+                del question_count_cache[topic]
+
+        # Очищаем user_stats_cache
+        for user_id in list(user_stats_cache.keys()):
+            if current_time - user_stats_cache[user_id]['timestamp'] > CACHE_TTL:
+                del user_stats_cache[user_id]

@@ -1,4 +1,4 @@
-# main.py - оптимизированная версия
+# main.py - исправленная версия
 import logging
 import asyncio
 import os
@@ -7,8 +7,9 @@ import time
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from bot.config import load_config
-from bot.handlers import register_handlers
+from bot.handlers import register_handlers, cleanup_old_cache
 from bot.scheduler import setup_scheduler
+from bot.db.database import cleanup_old_cache as cleanup_db_cache
 
 # Настройка логирования
 logging.basicConfig(
@@ -23,6 +24,18 @@ logger = logging.getLogger(__name__)
 
 # Кэш для проверки интернета
 internet_cache = {'last_check': 0, 'available': True, 'cache_time': 30}
+
+
+async def start_cache_cleanup():
+    """Запускает периодическую очистку кэшей"""
+    while True:
+        await asyncio.sleep(300)  # Каждые 5 минут
+        try:
+            cleanup_old_cache()  # Очистка кэшей handlers
+            cleanup_db_cache()  # Очистка кэшей database
+            logger.info("✅ Кэши очищены")
+        except Exception as e:
+            logger.error(f"Ошибка очистки кэшей: {e}")
 
 
 async def test_internet_connection():
@@ -156,6 +169,9 @@ async def resilient_polling(bot, dp):
 async def main():
     """Основная функция с быстрым восстановлением"""
     logger.info("Запуск автономного бота UXUI_insight_bot")
+
+    # Запускаем задачу очистки кэшей
+    cleanup_task = asyncio.create_task(start_cache_cleanup())
 
     while True:
         try:
