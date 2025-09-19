@@ -179,7 +179,6 @@ async def start_command(message: types.Message):
             "\n👑 Команды администратора:\n"
             "/letter - отправить сообщение всем пользователям\n"
             "/out - отменить рассылку\n"
-            "/load_questions - подгрузить вопросы в БД\n"
         )
 
     welcome_text += "\n💡 Не удаляйте сообщения с вопросами - они помогут в обучении!"
@@ -843,30 +842,6 @@ async def handle_reset_confirmation(callback_query: types.CallbackQuery):
         pass
 
 
-async def load_questions_command(message: types.Message):
-    """Команда для загрузки вопросов в базу (только для администратора)"""
-    user_id = message.from_user.id
-
-    # Проверяем, является ли пользователь администратором
-    if str(user_id) != config.ADMIN_ID:
-        msg = await message.answer("❌ У вас нет прав для выполнения этой команды.")
-        asyncio.create_task(delete_message_after(msg, 10))
-        return
-
-    # Удаляем сообщение с командой
-    try:
-        await message.delete()
-    except:
-        pass
-
-    # Загружаем вопросы
-    from bot.db.database import load_questions_from_fs
-    load_questions_from_fs()
-
-    msg = await message.answer("✅ Вопросы загружены в базу данных!")
-    asyncio.create_task(delete_message_after(msg, 10))
-
-
 def cleanup_old_cache():
     """Очищает устаревшие записи в кэшах handlers"""
     current_time = time.time()
@@ -898,7 +873,6 @@ def register_handlers(dp):
     dp.message.register(stats_command, Command('stats'))
     dp.message.register(today_command, Command('today'))
     dp.message.register(reset_progress_command, Command('reset_progress'))
-    dp.message.register(load_questions_command, Command('load_questions'))
     dp.message.register(letter_command, Command('letter'))
     dp.message.register(out_command, Command('out'))
     dp.callback_query.register(handle_answer, F.data.startswith('answer_'))
