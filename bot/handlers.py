@@ -11,7 +11,8 @@ from bot.db.database import (
     reset_daily_progress_if_needed,
     get_user_answered_questions_count,
     add_answered_question, get_next_topic,
-    get_all_users, reset_user_progress
+    get_all_users, reset_user_progress,
+    execute_query
 )
 from bot.config import load_config
 import os
@@ -213,8 +214,9 @@ async def stats_command(message: types.Message):
         # Получаем общее количество вопросов в текущей теме
         total_questions = get_questions_count_by_topic(current_topic)
 
-        # Получаем количество отвеченных вопросов в текущей теме
-        answered_questions = get_user_answered_questions_count(user_id, current_topic)
+        # ИСПРАВЛЕНИЕ: используем progress вместо answered_questions
+        # answered_questions = get_user_answered_questions_count(user_id, current_topic)
+        answered_questions = progress  # Это значение из current_topic_progress
 
         # Рассчитываем процент прогресса по теме
         progress_percent = 0
