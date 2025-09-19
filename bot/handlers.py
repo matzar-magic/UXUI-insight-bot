@@ -1,44 +1,111 @@
+# bot/handlers.py - полностью оптимизированная версия
 from aiogram import types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from bot.db.database import (add_user, get_user_stats, update_user_stats,
-                             get_questions_by_topic, get_question,
-                             update_user_topic_progress, mark_topic_completed,
-                             get_questions_count_by_topic,
-                             get_user_daily_progress, update_user_daily_progress,
-                             reset_daily_progress_if_needed,
-                             get_user_answered_questions_count,
-                             add_answered_question, get_next_topic,
-                             get_all_users)  # Добавляем get_all_users
+from bot.db.database import (
+    add_user, get_user_stats, update_user_stats,
+    get_questions_by_topic, get_question,
+    update_user_topic_progress, mark_topic_completed,
+    get_questions_count_by_topic,
+    get_user_daily_progress, update_user_daily_progress,
+    reset_daily_progress_if_needed,
+    get_user_answered_questions_count,
+    add_answered_question, get_next_topic,
+    get_all_users, reset_user_progress
+)
 from bot.config import load_config
 import os
 import asyncio
 from aiogram.types import FSInputFile
 from datetime import datetime
-from bot.db.database import reset_user_progress
+import time
 
-# Глобальный словарь для хранения следующих вопросов для пользователей
+# Глобальные словари с ограничением размера и TTL
 user_next_questions = {}
 user_active_sessions = {}
+admin_broadcast_state = {}
+user_reset_states = {}
+message_delete_tasks = {}
+subscription_cache = {}
+
+# Ограничиваем размер кэшей
+MAX_CACHE_SIZE = 1000
+CACHE_TTL = 300  # 5 минут
+
 config = load_config()
 
-# Добавляем состояние для рассылки
-admin_broadcast_state = {}
+
+def cleanup_old_cache():
+    """Очищает устаревшие записи в кэшах"""
+    current_time = time.time()
+
+    # Очищаем кэши
+    for cache_dict in [user_next_questions, user_active_sessions,
+                       admin_broadcast_state, user_reset_states, subscription_cache]:
+        keys_to_remove = []
+        for key, value in cache_dict.items():
+            if isinstance(value, dict) and 'timestamp' in value:
+                if current_time - value['timestamp'] > CACHE_TTL:
+                    keys_to_remove.append(key)
+            elif current_time - getattr(value, 'timestamp', current_time) > CACHE_TTL:
+                keys_to_remove.append(key)
+
+        for key in keys_to_remove:
+            del cache_dict[key]
+
+    # Очищаем слишком большие кэши
+    for cache_dict in [user_next_questions, user_active_sessions]:
+        if len(cache_dict) > MAX_CACHE_SIZE:
+            keys_to_remove = list(cache_dict.keys())[:len(cache_dict) - MAX_CACHE_SIZE]
+            for key in keys_to_remove:
+                del cache_dict[key]
 
 
 async def delete_message_after(message: types.Message, delay: int):
-    await asyncio.sleep(delay)
-    try:
-        await message.delete()
-    except:
-        pass
+    """Удаляет сообщение после задержки с отменой предыдущих задач"""
+    user_id = message.chat.id
+    message_id = message.message_id
+
+    # Отменяем предыдущую задачу удаления для этого сообщения
+    task_key = f"{user_id}_{message_id}"
+    if task_key in message_delete_tasks:
+        message_delete_tasks[task_key].cancel()
+
+    # Создаем новую задачу
+    async def delete_task():
+        await asyncio.sleep(delay)
+        try:
+            await message.delete()
+        except:
+            pass
+        finally:
+            if task_key in message_delete_tasks:
+                del message_delete_tasks[task_key]
+
+    message_delete_tasks[task_key] = asyncio.create_task(delete_task())
 
 
 async def check_subscription(user_id, bot):
-    """Проверяет, подписан ли пользователь на канал"""
+    """Проверяет подписку с кэшированием"""
+    current_time = time.time()
+
+    # Проверяем кэш
+    if user_id in subscription_cache:
+        if current_time - subscription_cache[user_id]['timestamp'] < CACHE_TTL:
+            return subscription_cache[user_id]['subscribed']
+
+    # Если нет в кэше или устарело, проверяем через API
     try:
         member = await bot.get_chat_member(chat_id=config.CHANNEL_ID, user_id=user_id)
-        return member.status in ['member', 'administrator', 'creator']
+        is_subscribed = member.status in ['member', 'administrator', 'creator']
+
+        # Сохраняем в кэш
+        subscription_cache[user_id] = {
+            'subscribed': is_subscribed,
+            'timestamp': current_time
+        }
+
+        return is_subscribed
     except Exception as e:
         print(f"Ошибка при проверке подписки: {e}")
         return False
@@ -70,7 +137,7 @@ async def start_command(message: types.Message):
     # Получаем имя пользователя для приветствия
     user_first_name = message.from_user.first_name or "друг"
 
-    # Проверяем подписку
+    # Проверяем подписку с кэшированием
     is_subscribed = await check_subscription(user_id, message.bot)
 
     welcome_text = (
@@ -93,9 +160,6 @@ async def start_command(message: types.Message):
         return
 
     # Если пользователь подписан, показываем полное приветствие
-    # Проверяем наличие вопросов
-    typography_count = get_questions_count_by_topic('typography')
-
     welcome_text += (
         "Каждый день в 14:00 вы будете получать 5 вопросов по одной из тем:\n"
         "• Типографика\n"
@@ -103,12 +167,6 @@ async def start_command(message: types.Message):
         "• UX-принципы\n"
         "• UI-паттерны\n"
         "• Композиция\n\n"
-    )
-
-    if typography_count == 0:
-        welcome_text += "⚠️ Вопросы пока не загружены. Администратор добавит их скоро.\n\n"
-
-    welcome_text += (
         "Используйте команды:\n"
         "/stats - ваша статистика\n"
         "/today - получить сегодняшние вопросы\n"
@@ -121,7 +179,6 @@ async def start_command(message: types.Message):
             "\n👑 Команды администратора:\n"
             "/letter - отправить сообщение всем пользователям\n"
             "/out - отменить рассылку\n"
-            "/load_questions - подгрузить вопросы в БД\n"
         )
 
     welcome_text += "\n💡 Не удаляйте сообщения с вопросами - они помогут в обучении!"
@@ -130,7 +187,7 @@ async def start_command(message: types.Message):
 
 
 async def stats_command(message: types.Message):
-    # Проверяем подписку
+    # Проверяем подписку с кэшированием
     is_subscribed = await check_subscription(message.from_user.id, message.bot)
     if not is_subscribed:
         await ask_for_subscription(message)
@@ -140,15 +197,14 @@ async def stats_command(message: types.Message):
     try:
         await message.delete()
     except:
-        pass  # Игнорируем ошибки удаления
+        pass
 
     user_id = message.from_user.id
     stats = get_user_stats(user_id)
-    daily_progress = get_user_daily_progress(user_id)
 
     if stats:
-        # Теперь stats содержит 6 значений вместо 5
-        total_correct, current_topic, progress, completed_topics, user_role, _ = stats
+        # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
+        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
 
         # Получаем количество завершенных тем
         completed_count = len(completed_topics.split(',')) if completed_topics else 0
@@ -203,12 +259,12 @@ async def stats_command(message: types.Message):
         # Активная сессия - удаляем через 10 секунд
         asyncio.create_task(delete_message_after(stats_msg, 10))
     else:
-        # Неактивная сессия - удаляем через 1 минуту (60 секунд)
+        # Неактивная сессия - удаляем через 60 секунд
         asyncio.create_task(delete_message_after(stats_msg, 60))
 
 
 async def today_command(message: types.Message):
-    # Проверяем подписку
+    # Проверяем подписку с кэшированием
     is_subscribed = await check_subscription(message.from_user.id, message.bot)
     if not is_subscribed:
         await ask_for_subscription(message)
@@ -222,11 +278,10 @@ async def today_command(message: types.Message):
         try:
             await message.delete()
         except:
-            pass  # Игнорируем ошибки удаления
+            pass
 
         # Отправляем и удаляем сообщение бота о активной сессии
-        msg = await message.answer(
-            "❌ Вы уже просматриваете сегоднящние вопросы. Завершите текущую сессию!")
+        msg = await message.answer("❌ Вы уже просматриваете сегоднящние вопросы. Завершите текущую сессию!")
         asyncio.create_task(delete_message_after(msg, 10))
         return
 
@@ -237,25 +292,24 @@ async def today_command(message: types.Message):
         await message.answer("Сначала используйте /start")
         return
 
+    # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
+    total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+
     # Проверяем, сколько вопросов уже было сегодня
-    questions_today = get_user_daily_progress(user_id)
-    if questions_today >= 5:
+    if daily_progress >= 5:
         # Удаляем сообщение пользователя с командой /today
         try:
             await message.delete()
         except:
-            pass  # Игнорируем ошибки удаления
+            pass
 
         # Отправляем и удаляем сообщение бота о лимите
-        msg = await message.answer(
-            "❌ Вы уже ответили на 5 вопросов сегодня. Следующие вопросы будут доступны завтра.")
+        msg = await message.answer("❌ Вы уже ответили на 5 вопросов сегодня. Следующие вопросы будут доступны завтра.")
         asyncio.create_task(delete_message_after(msg, 10))
         return
 
     # Помечаем сессию как активную
     user_active_sessions[user_id] = True
-
-    total_correct, current_topic, progress, completed_topics, user_role = stats
 
     # Проверяем, завершена ли текущая тема
     total_questions = get_questions_count_by_topic(current_topic)
@@ -279,16 +333,15 @@ async def today_command(message: types.Message):
     # Проверяем, есть ли вопросы в теме
     topic_questions_count = get_questions_count_by_topic(current_topic)
     if topic_questions_count == 0:
-        await message.answer(
-            f"❌ Вопросы по теме '{current_topic}' не найдены.\n\n"
-            f"Администратор добавит вопросы скоро."
-        )
+        await message.answer(f"❌ Вопросы по теме '{current_topic}' не найдены.\n\nАдминистратор добавит вопросы скоро.")
         # Снимаем отметку об активной сессии
         user_active_sessions[user_id] = False
         return
 
     # Получаем вопросы для текущей темы (только те, на которые еще не ответили)
-    question_ids = get_questions_by_topic(user_id, current_topic, 5)
+    # ИСПРАВЛЕНО: извлекаем ID из кортежей
+    question_ids_result = get_questions_by_topic(user_id, current_topic, 5)
+    question_ids = [row[0] for row in question_ids_result] if question_ids_result else []
 
     if not question_ids:
         # Нет новых вопросов в текущей теме
@@ -300,7 +353,8 @@ async def today_command(message: types.Message):
             await message.answer(f"🎉 В текущей теме нет новых вопросов! Переходим к следующей теме: {next_topic}")
 
             # Получаем вопросы для новой темы
-            question_ids = get_questions_by_topic(user_id, current_topic, 5)
+            question_ids_result = get_questions_by_topic(user_id, current_topic, 5)
+            question_ids = [row[0] for row in question_ids_result] if question_ids_result else []
 
             if not question_ids:
                 await message.answer(f"❌ В теме '{current_topic}' тоже нет вопросов.")
@@ -406,22 +460,7 @@ async def handle_broadcast_message(message: types.Message):
                 await message.bot.send_video(user_id, message.video.file_id, caption=message.caption)
             elif message.document:
                 await message.bot.send_document(user_id, message.document.file_id, caption=message.caption)
-            elif message.audio:
-                await message.bot.send_audio(user_id, message.audio.file_id, caption=message.caption)
-            elif message.voice:
-                await message.bot.send_voice(user_id, message.voice.file_id)
-            elif message.video_note:
-                await message.bot.send_video_note(user_id, message.video_note.file_id)
-            elif message.sticker:
-                await message.bot.send_sticker(user_id, message.sticker.file_id)
-            elif message.animation:
-                await message.bot.send_animation(user_id, message.animation.file_id, caption=message.caption)
-            elif message.media_group_id:
-                # Для медиагрупп используем копирование медиа
-                media = message.media_group.copy()
-                await message.bot.send_media_group(user_id, media)
             else:
-                # Если тип сообщения не поддерживается, отправляем уведомление
                 await message.bot.send_message(user_id, "❌ Неподдерживаемый тип сообщения в рассылке")
                 return False
             return True
@@ -429,22 +468,23 @@ async def handle_broadcast_message(message: types.Message):
             print(f"Ошибка отправки сообщения пользователю {user_id}: {e}")
             return False
 
-    # Отправляем сообщение всем пользователям
-    for user_id in users:
+    # Отправляем сообщение всем пользователям с ограничением скорости
+    for i, user_id in enumerate(users):
         if await send_to_user(user_id):
             successful += 1
         else:
             failed += 1
 
-        # Обновляем прогресс каждые 10 отправок
-        if (successful + failed) % 10 == 0:
+        # Обновляем прогресс каждые 10 отправок и делаем небольшую паузу
+        if (i + 1) % 10 == 0:
             try:
                 await progress_msg.edit_text(
                     f"✉️ Рассылка в процессе...\n"
                     f"Успешно: {successful}\n"
                     f"Не удалось: {failed}\n"
-                    f"Осталось: {total_users - successful - failed}"
+                    f"Осталось: {total_users - i - 1}"
                 )
+                await asyncio.sleep(0.1)  # Небольшая пауза
             except:
                 pass
 
@@ -468,14 +508,21 @@ async def end_questions_session(message, user_id):
         "🎉 Вы ответили на все 5 вопросов сегодня!\n\n"
         "Завтра вас ждут новые вопросы. Не забывайте заглядывать!"
     )
-    asyncio.create_task(delete_message_after(final_msg, 10))  # Удаляем через 10 секунд
+    asyncio.create_task(delete_message_after(final_msg, 10))
 
 
 async def send_next_question(message, user_id):
     """Отправляет следующий вопрос пользователю"""
     # Проверяем дневной лимит
-    questions_today = get_user_daily_progress(user_id)
-    if questions_today >= 5:
+    stats = get_user_stats(user_id)
+    if not stats:
+        user_active_sessions[user_id] = False
+        return
+
+    # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
+    total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+
+    if daily_progress >= 5:
         await end_questions_session(message, user_id)
         return
 
@@ -487,7 +534,8 @@ async def send_next_question(message, user_id):
             user_active_sessions[user_id] = False
             return
 
-        total_correct, current_topic, progress, completed_topics, user_role = stats
+        # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
+        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
 
         # Проверяем, не завершена ли текущая тема
         total_questions = get_questions_count_by_topic(current_topic)
@@ -508,7 +556,10 @@ async def send_next_question(message, user_id):
                 return
 
         # Получаем вопросы для текущей темы
-        question_ids = get_questions_by_topic(user_id, current_topic, 5 - questions_today)
+        # ИСПРАВЛЕНО: извлекаем ID из кортежей
+        question_ids_result = get_questions_by_topic(user_id, current_topic, 5 - daily_progress)
+        question_ids = [row[0] for row in question_ids_result] if question_ids_result else []
+
         if not question_ids:
             await end_questions_session(message, user_id)
             return
@@ -521,17 +572,18 @@ async def send_next_question(message, user_id):
 
     if question_data:
         stats = get_user_stats(user_id)
-        total_correct, current_topic, progress, completed_topics, user_role = stats
-        topic_names = {
-            'typography': 'Типографика',
-            'coloristics': 'Колористика',
-            'composition': 'Композиция',
-            'ux_principles': 'UX-принципы',
-            'ui_patterns': 'UI-паттерны',
-
-        }
-        topic_name = topic_names.get(current_topic, current_topic.capitalize())
-        await send_question(message, question_data, f"// {topic_name}")
+        if stats:
+            # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
+            total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+            topic_names = {
+                'typography': 'Типографика',
+                'coloristics': 'Колористика',
+                'composition': 'Композиция',
+                'ux_principles': 'UX-принципы',
+                'ui_patterns': 'UI-паттерны',
+            }
+            topic_name = topic_names.get(current_topic, current_topic.capitalize())
+            await send_question(message, question_data, f"// {topic_name}")
     else:
         await message.answer("❌ Не удалось загрузить вопрос. Попробуйте позже.")
         # Снимаем отметку об активной сессии
@@ -540,12 +592,10 @@ async def send_next_question(message, user_id):
 
 async def send_question(message, question_data, caption):
     """Отправляет один вопрос"""
-    # Распаковываем 12 полей вместо 11
     (question_id, category, question_block, image_path,
      option_a, option_b, option_c, option_d,
-     buttons_count, correct_option, explanation, created_at) = question_data  # Добавлено created_at
+     buttons_count, correct_option, explanation, created_at) = question_data
 
-    # Остальной код без изменений...
     keyboard_buttons = []
     letters = ['a', 'b', 'c', 'd']
 
@@ -598,7 +648,6 @@ async def handle_answer(callback_query: types.CallbackQuery):
     if not question_data:
         return
 
-    # Распаковываем 12 полей вместо 11 (добавлено created_at)
     (question_id, category, question_block, image_path,
      option_a, option_b, option_c, option_d,
      buttons_count, correct_option, explanation, created_at) = question_data
@@ -625,7 +674,8 @@ async def handle_answer(callback_query: types.CallbackQuery):
     stats = get_user_stats(user_id)
     topic_completed = False
     if stats:
-        total_correct, current_topic, progress, completed_topics, user_role = stats
+        # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
+        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
         total_questions = get_questions_count_by_topic(current_topic)
         answered_questions = get_user_answered_questions_count(user_id, current_topic)
 
@@ -717,28 +767,8 @@ async def check_subscription_callback(callback_query: types.CallbackQuery):
         )
 
 
-def register_handlers(dp):
-    dp.message.register(start_command, Command('start'))
-    dp.message.register(stats_command, Command('stats'))
-    dp.message.register(today_command, Command('today'))
-    dp.message.register(reset_progress_command, Command('reset_progress'))  # Новый обработчик
-    dp.message.register(load_questions_command, Command('load_questions'))
-    dp.message.register(letter_command, Command('letter'))
-    dp.message.register(out_command, Command('out'))
-    dp.callback_query.register(handle_answer, F.data.startswith('answer_'))
-    dp.callback_query.register(check_subscription_callback, F.data == "check_subscription")
-    dp.callback_query.register(handle_reset_confirmation, F.data.startswith('reset_'))  # Новый обработчик
-
-    # Добавляем обработчик для сообщений (должен быть последним)
-    dp.message.register(handle_broadcast_message, F.chat.type == "private")
-
-
-# Глобальный словарь для отслеживания состояний сброса прогресса
-user_reset_states = {}
-
-
 async def reset_progress_command(message: types.Message):
-    # Проверяем подписку
+    # Проверяем подписку с кэшированием
     is_subscribed = await check_subscription(message.from_user.id, message.bot)
     if not is_subscribed:
         await ask_for_subscription(message)
@@ -829,28 +859,42 @@ async def handle_reset_confirmation(callback_query: types.CallbackQuery):
         pass
 
 
-async def load_questions_command(message: types.Message):
-    """Команда для загрузки вопросов в базу (только для администратора)"""
-    user_id = message.from_user.id
+def cleanup_old_cache():
+    """Очищает устаревшие записи в кэшах handlers"""
+    current_time = time.time()
 
-    # Проверяем, является ли пользователь администратором
-    if str(user_id) != config.ADMIN_ID:
-        msg = await message.answer("❌ У вас нет прав для выполнения этой команды.")
-        asyncio.create_task(delete_message_after(msg, 10))
-        return
+    # Очищаем кэши
+    for cache_dict in [user_next_questions, user_active_sessions,
+                       admin_broadcast_state, user_reset_states, subscription_cache]:
+        keys_to_remove = []
+        for key, value in cache_dict.items():
+            if isinstance(value, dict) and 'timestamp' in value:
+                if current_time - value['timestamp'] > CACHE_TTL:
+                    keys_to_remove.append(key)
+            elif current_time - getattr(value, 'timestamp', current_time) > CACHE_TTL:
+                keys_to_remove.append(key)
 
-    # Удаляем сообщение с командой
-    try:
-        await message.delete()
-    except:
-        pass
+        for key in keys_to_remove:
+            del cache_dict[key]
 
-    # Загружаем вопросы
-    from bot.db.database import load_questions_from_fs
-    load_questions_from_fs()
+    # Очищаем слишком большие кэши
+    for cache_dict in [user_next_questions, user_active_sessions]:
+        if len(cache_dict) > MAX_CACHE_SIZE:
+            keys_to_remove = list(cache_dict.keys())[:len(cache_dict) - MAX_CACHE_SIZE]
+            for key in keys_to_remove:
+                del cache_dict[key]
 
-    msg = await message.answer("✅ Вопросы загружены в базу данных!")
-    asyncio.create_task(delete_message_after(msg, 10))
 
-# Не забудьте зарегистрировать обработчик в register_handlers:
-# dp.message.register(load_questions_command, Command('load_questions'))
+def register_handlers(dp):
+    dp.message.register(start_command, Command('start'))
+    dp.message.register(stats_command, Command('stats'))
+    dp.message.register(today_command, Command('today'))
+    dp.message.register(reset_progress_command, Command('reset_progress'))
+    dp.message.register(letter_command, Command('letter'))
+    dp.message.register(out_command, Command('out'))
+    dp.callback_query.register(handle_answer, F.data.startswith('answer_'))
+    dp.callback_query.register(check_subscription_callback, F.data == "check_subscription")
+    dp.callback_query.register(handle_reset_confirmation, F.data.startswith('reset_'))
+
+    # Добавляем обработчик для сообщений (должен быть последним)
+    dp.message.register(handle_broadcast_message, F.chat.type == "private")

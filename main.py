@@ -1,3 +1,4 @@
+# main.py - исправленная версия
 import logging
 import asyncio
 import os
@@ -8,6 +9,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from bot.config import load_config
 from bot.handlers import register_handlers
 from bot.scheduler import setup_scheduler
+from bot.db.database import cleanup_old_cache as cleanup_db_cache
 
 # Настройка логирования
 logging.basicConfig(
@@ -20,9 +22,47 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Кэш для проверки интернета
+internet_cache = {'last_check': 0, 'available': True, 'cache_time': 30}
+
+
+async def cleanup_all_caches():
+    """Очищает все кэши приложения"""
+    try:
+        # Очищаем кэш базы данных
+        cleanup_db_cache()
+
+        # Импортируем и очищаем кэши handlers (если есть такая функция)
+        try:
+            from bot.handlers import cleanup_old_cache
+            cleanup_old_cache()
+        except ImportError:
+            pass  # Если функции нет, пропускаем
+
+        # Очищаем кэш интернета
+        global internet_cache
+        internet_cache = {'last_check': 0, 'available': True, 'cache_time': 30}
+
+        logger.info("✅ Все кэши очищены")
+    except Exception as e:
+        logger.error(f"Ошибка очистки кэшей: {e}")
+
+
+async def start_cache_cleanup():
+    """Запускает периодическую очистку кэшей"""
+    while True:
+        await asyncio.sleep(300)  # Каждые 5 минут
+        await cleanup_all_caches()
+
 
 async def test_internet_connection():
-    """Проверяем доступность интернета"""
+    """Проверяем доступность интернета с кэшированием"""
+    current_time = time.time()
+
+    # Используем кэшированный результат, если проверяли недавно
+    if current_time - internet_cache['last_check'] < internet_cache['cache_time']:
+        return internet_cache['available']
+
     test_urls = [
         "https://api.telegram.org",
         "https://google.com",
@@ -32,13 +72,17 @@ async def test_internet_connection():
     for url in test_urls:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=5) as response:  # Уменьшил timeout до 5 секунд
+                async with session.get(url, timeout=5) as response:
                     if response.status == 200:
                         logger.info(f"Интернет доступен через {url}")
+                        internet_cache['available'] = True
+                        internet_cache['last_check'] = current_time
                         return True
         except Exception:
             continue
 
+    internet_cache['available'] = False
+    internet_cache['last_check'] = current_time
     return False
 
 
@@ -102,9 +146,9 @@ async def initialize_bot():
 
 async def resilient_polling(bot, dp):
     """Запускает polling с автоматическим восстановлением при сбоях"""
-    max_retries = 1000  # Практически бесконечное количество попыток
-    base_delay = 1  # Уменьшил базовую задержку до 1 секунды
-    max_delay = 5  # Уменьшил максимальную задержку до 5 секунд
+    max_retries = 1000
+    base_delay = 1
+    max_delay = 5
 
     for attempt in range(max_retries):
         try:
@@ -112,7 +156,6 @@ async def resilient_polling(bot, dp):
             await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
         except Exception as e:
-            # Минимальная задержка с небольшим увеличением при повторных ошибках
             delay = min(base_delay + attempt, max_delay)
 
             logger.error(f"Ошибка polling (попытка {attempt + 1}/{max_retries}): {e}")
@@ -121,11 +164,10 @@ async def resilient_polling(bot, dp):
             # Ждем перед повторной попыткой
             await asyncio.sleep(delay)
 
-            # Проверяем доступность интернета
+            # Проверяем доступность интернета (с кэшированием)
             internet_available = await test_internet_connection()
             if not internet_available:
                 logger.warning("Интернет недоступен, ждем восстановления соединения...")
-                # Короткая пауза при отсутствии интернета
                 await asyncio.sleep(2)
                 continue
 
@@ -145,6 +187,9 @@ async def main():
     """Основная функция с быстрым восстановлением"""
     logger.info("Запуск автономного бота UXUI_insight_bot")
 
+    # Запускаем задачу очистки кэшей
+    cleanup_task = asyncio.create_task(start_cache_cleanup())
+
     while True:
         try:
             # Инициализируем бота
@@ -162,35 +207,6 @@ async def main():
             await asyncio.sleep(2)
 
 
-async def initialize_bot():
-    """Инициализирует бота и базу данных"""
-    config = load_config()
-
-    # Создаем сессию бота
-    bot = await create_bot_session()
-
-    dp = Dispatcher()
-
-    # Регистрация обработчиков
-    register_handlers(dp)
-
-    # Инициализация базы данных
-    from bot.db.database import create_tables, load_questions_from_fs, check_data_integrity
-    create_tables()
-
-    # Загружаем вопросы только если таблица пуста
-    if is_questions_table_empty():
-        load_questions_from_fs()
-
-    # Проверяем целостность данных (но НЕ сбрасываем текущий прогресс)
-    check_data_integrity()
-
-    # Настройка планировщика для ежедневных вопросов
-    scheduler = setup_scheduler(bot)
-
-    return bot, dp, scheduler
-
-
 if __name__ == "__main__":
     # Бесконечный цикл с быстрым перезапуском
     while True:
@@ -199,4 +215,4 @@ if __name__ == "__main__":
         except Exception as e:
             logger.critical(f"Фатальная ошибка: {e}")
             logger.info("Полный перезапуск бота через 1 секунду...")
-            time.sleep(1)  # Уменьшил задержку до 1 секунды
+            time.sleep(1)
