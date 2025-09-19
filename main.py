@@ -1,3 +1,4 @@
+# main.py - оптимизированная версия
 import logging
 import asyncio
 import os
@@ -20,9 +21,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Кэш для проверки интернета
+internet_cache = {'last_check': 0, 'available': True, 'cache_time': 30}
+
 
 async def test_internet_connection():
-    """Проверяем доступность интернета"""
+    """Проверяем доступность интернета с кэшированием"""
+    current_time = time.time()
+
+    # Используем кэшированный результат, если проверяли недавно
+    if current_time - internet_cache['last_check'] < internet_cache['cache_time']:
+        return internet_cache['available']
+
     test_urls = [
         "https://api.telegram.org",
         "https://google.com",
@@ -32,13 +42,17 @@ async def test_internet_connection():
     for url in test_urls:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=5) as response:  # Уменьшил timeout до 5 секунд
+                async with session.get(url, timeout=5) as response:
                     if response.status == 200:
                         logger.info(f"Интернет доступен через {url}")
+                        internet_cache['available'] = True
+                        internet_cache['last_check'] = current_time
                         return True
         except Exception:
             continue
 
+    internet_cache['available'] = False
+    internet_cache['last_check'] = current_time
     return False
 
 
@@ -102,9 +116,9 @@ async def initialize_bot():
 
 async def resilient_polling(bot, dp):
     """Запускает polling с автоматическим восстановлением при сбоях"""
-    max_retries = 1000  # Практически бесконечное количество попыток
-    base_delay = 1  # Уменьшил базовую задержку до 1 секунды
-    max_delay = 5  # Уменьшил максимальную задержку до 5 секунд
+    max_retries = 1000
+    base_delay = 1
+    max_delay = 5
 
     for attempt in range(max_retries):
         try:
@@ -112,7 +126,6 @@ async def resilient_polling(bot, dp):
             await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
         except Exception as e:
-            # Минимальная задержка с небольшим увеличением при повторных ошибках
             delay = min(base_delay + attempt, max_delay)
 
             logger.error(f"Ошибка polling (попытка {attempt + 1}/{max_retries}): {e}")
@@ -121,11 +134,10 @@ async def resilient_polling(bot, dp):
             # Ждем перед повторной попыткой
             await asyncio.sleep(delay)
 
-            # Проверяем доступность интернета
+            # Проверяем доступность интернета (с кэшированием)
             internet_available = await test_internet_connection()
             if not internet_available:
                 logger.warning("Интернет недоступен, ждем восстановления соединения...")
-                # Короткая пауза при отсутствии интернета
                 await asyncio.sleep(2)
                 continue
 
@@ -159,30 +171,7 @@ async def main():
         except Exception as e:
             logger.critical(f"Критическая ошибка в основном цикле: {e}")
             logger.info("Перезапуск бота через 2 секунды...")
-            await asyncio.sleep(2)  # Уменьшил задержку до 2 секунд
-
-
-async def initialize_bot():
-    """Инициализирует бота и базу данных"""
-    config = load_config()
-
-    # Создаем сессию бота
-    bot = await create_bot_session()
-
-    dp = Dispatcher()
-
-    # Регистрация обработчиков
-    register_handlers(dp)
-
-    # Инициализация базы данных
-    from bot.db.database import create_tables, load_questions_from_fs
-    create_tables()
-    load_questions_from_fs()  # Добавьте эту строку
-
-    # Настройка планировщика для ежедневных вопросов
-    scheduler = setup_scheduler(bot)
-
-    return bot, dp, scheduler
+            await asyncio.sleep(2)
 
 
 if __name__ == "__main__":
@@ -193,4 +182,4 @@ if __name__ == "__main__":
         except Exception as e:
             logger.critical(f"Фатальная ошибка: {e}")
             logger.info("Полный перезапуск бота через 1 секунду...")
-            time.sleep(1)  # Уменьшил задержку до 1 секунды
+            time.sleep(1)
