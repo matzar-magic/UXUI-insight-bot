@@ -452,12 +452,6 @@ async def handle_broadcast_message(message: types.Message):
     # Отключаем состояние рассылки
     del admin_broadcast_state[user_id]
 
-    # Удаляем сообщение с контентом для рассылки сразу
-    try:
-        await message.delete()
-    except:
-        pass
-
     # Получаем всех пользователей
     users = get_all_users()
     total_users = len(users)
@@ -470,17 +464,12 @@ async def handle_broadcast_message(message: types.Message):
     # Функция для отправки сообщения пользователю
     async def send_to_user(user_id):
         try:
-            if message.text:
-                await message.bot.send_message(user_id, message.text)
-            elif message.photo:
-                await message.bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption)
-            elif message.video:
-                await message.bot.send_video(user_id, message.video.file_id, caption=message.caption)
-            elif message.document:
-                await message.bot.send_document(user_id, message.document.file_id, caption=message.caption)
-            else:
-                await message.bot.send_message(user_id, "❌ Неподдерживаемый тип сообщения в рассылке")
-                return False
+            # Используем copy_message для копирования исходного сообщения
+            await message.bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id
+            )
             return True
         except Exception as e:
             print(f"Ошибка отправки сообщения пользователю {user_id}: {e}")
