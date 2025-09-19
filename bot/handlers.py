@@ -577,16 +577,19 @@ async def send_next_question(message, user_id):
     question_data = get_question(question_id)
 
     if question_data:
-        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = get_user_stats(user_id)
-        topic_names = {
-            'typography': 'Типографика',
-            'coloristics': 'Колористика',
-            'composition': 'Композиция',
-            'ux_principles': 'UX-принципы',
-            'ui_patterns': 'UI-паттерны',
-        }
-        topic_name = topic_names.get(current_topic, current_topic.capitalize())
-        await send_question(message, question_data, f"// {topic_name}")
+        # Обновляем статистику перед отправкой вопроса
+        stats = get_user_stats(user_id)
+        if stats:
+            total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+            topic_names = {
+                'typography': 'Типографика',
+                'coloristics': 'Колористика',
+                'composition': 'Композиция',
+                'ux_principles': 'UX-принципы',
+                'ui_patterns': 'UI-паттерны',
+            }
+            topic_name = topic_names.get(current_topic, current_topic.capitalize())
+            await send_question(message, question_data, f"// {topic_name}")
     else:
         await message.answer("❌ Не удалось загрузить вопрос. Попробуйте позже.")
         user_active_sessions[user_id] = False
@@ -636,6 +639,15 @@ async def handle_answer(callback_query: types.CallbackQuery):
     data = callback_query.data.split('_')
     question_id = int(data[1])
     user_answer = data[2]
+
+    # Проверяем дневной лимит перед обработкой ответа
+    stats = get_user_stats(user_id)
+    if stats:
+        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+        if daily_progress >= 5:
+            # Лимит достигнут, завершаем сессию
+            await end_questions_session(callback_query.message, user_id)
+            return
 
     # Отключаем все кнопки в сообщении
     try:
