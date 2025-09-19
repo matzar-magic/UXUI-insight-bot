@@ -85,14 +85,16 @@ async def delete_message_after(message: types.Message, delay: int):
     message_delete_tasks[task_key] = asyncio.create_task(delete_task())
 
 
-async def check_subscription(user_id, bot):
+async def check_subscription(user_id, bot, force_check=False):
     """Проверяет подписку с кэшированием"""
     current_time = time.time()
 
-    # Проверяем кэш
-    if user_id in subscription_cache:
-        if current_time - subscription_cache[user_id]['timestamp'] < CACHE_TTL:
-            return subscription_cache[user_id]['subscribed']
+    # Если принудительная проверка, игнорируем кэш
+    if not force_check:
+        # Проверяем кэш
+        if user_id in subscription_cache:
+            if current_time - subscription_cache[user_id]['timestamp'] < CACHE_TTL:
+                return subscription_cache[user_id]['subscribed']
 
     # Если нет в кэше или устарело, проверяем через API
     try:
@@ -109,7 +111,6 @@ async def check_subscription(user_id, bot):
     except Exception as e:
         print(f"Ошибка при проверке подписки: {e}")
         return False
-
 
 async def ask_for_subscription(message: types.Message):
     """Просит пользователя подписаться на канал"""
@@ -763,13 +764,22 @@ async def handle_answer(callback_query: types.CallbackQuery):
 
 
 async def check_subscription_callback(callback_query: types.CallbackQuery):
-    """Обрабатывает проверку подписки"""
+    """Обрабатывает проверку подписки с принудительным обновлением кэша"""
     user_id = callback_query.from_user.id
-    is_subscribed = await check_subscription(user_id, callback_query.bot)
+
+    # Принудительно очищаем кэш для этого пользователя
+    if user_id in subscription_cache:
+        del subscription_cache[user_id]
+
+    # Делаем свежую проверку подписки
+    is_subscribed = await check_subscription(user_id, callback_query.bot, force_check=True)
 
     if is_subscribed:
         # Удаляем сообщение с просьбой подписаться
-        await callback_query.message.delete()
+        try:
+            await callback_query.message.delete()
+        except:
+            pass
 
         # Приветствуем пользователя
         await callback_query.message.answer(
