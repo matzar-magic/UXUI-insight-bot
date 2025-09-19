@@ -7,7 +7,7 @@ import time
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from bot.config import load_config
-from bot.handlers import register_handlers, cleanup_old_cache
+from bot.handlers import register_handlers
 from bot.scheduler import setup_scheduler
 from bot.db.database import cleanup_old_cache as cleanup_db_cache
 
@@ -26,16 +26,33 @@ logger = logging.getLogger(__name__)
 internet_cache = {'last_check': 0, 'available': True, 'cache_time': 30}
 
 
+async def cleanup_all_caches():
+    """Очищает все кэши приложения"""
+    try:
+        # Очищаем кэш базы данных
+        cleanup_db_cache()
+
+        # Импортируем и очищаем кэши handlers (если есть такая функция)
+        try:
+            from bot.handlers import cleanup_old_cache
+            cleanup_old_cache()
+        except ImportError:
+            pass  # Если функции нет, пропускаем
+
+        # Очищаем кэш интернета
+        global internet_cache
+        internet_cache = {'last_check': 0, 'available': True, 'cache_time': 30}
+
+        logger.info("✅ Все кэши очищены")
+    except Exception as e:
+        logger.error(f"Ошибка очистки кэшей: {e}")
+
+
 async def start_cache_cleanup():
     """Запускает периодическую очистку кэшей"""
     while True:
         await asyncio.sleep(300)  # Каждые 5 минут
-        try:
-            cleanup_old_cache()  # Очистка кэшей handlers
-            cleanup_db_cache()  # Очистка кэшей database
-            logger.info("✅ Кэши очищены")
-        except Exception as e:
-            logger.error(f"Ошибка очистки кэшей: {e}")
+        await cleanup_all_caches()
 
 
 async def test_internet_connection():

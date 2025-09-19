@@ -867,6 +867,32 @@ async def load_questions_command(message: types.Message):
     asyncio.create_task(delete_message_after(msg, 10))
 
 
+def cleanup_old_cache():
+    """Очищает устаревшие записи в кэшах handlers"""
+    current_time = time.time()
+
+    # Очищаем кэши
+    for cache_dict in [user_next_questions, user_active_sessions,
+                       admin_broadcast_state, user_reset_states, subscription_cache]:
+        keys_to_remove = []
+        for key, value in cache_dict.items():
+            if isinstance(value, dict) and 'timestamp' in value:
+                if current_time - value['timestamp'] > CACHE_TTL:
+                    keys_to_remove.append(key)
+            elif current_time - getattr(value, 'timestamp', current_time) > CACHE_TTL:
+                keys_to_remove.append(key)
+
+        for key in keys_to_remove:
+            del cache_dict[key]
+
+    # Очищаем слишком большие кэши
+    for cache_dict in [user_next_questions, user_active_sessions]:
+        if len(cache_dict) > MAX_CACHE_SIZE:
+            keys_to_remove = list(cache_dict.keys())[:len(cache_dict) - MAX_CACHE_SIZE]
+            for key in keys_to_remove:
+                del cache_dict[key]
+
+
 def register_handlers(dp):
     dp.message.register(start_command, Command('start'))
     dp.message.register(stats_command, Command('stats'))
@@ -881,15 +907,3 @@ def register_handlers(dp):
 
     # Добавляем обработчик для сообщений (должен быть последним)
     dp.message.register(handle_broadcast_message, F.chat.type == "private")
-
-
-# Запускаем периодическую очистку кэша
-async def start_cache_cleanup():
-    """Запускает периодическую очистку кэша"""
-    while True:
-        await asyncio.sleep(CACHE_TTL)
-        cleanup_old_cache()
-
-
-# Запускаем очистку кэша при импорте
-asyncio.create_task(start_cache_cleanup())
