@@ -132,7 +132,19 @@ async def send_admin_notification(bot: Bot):
 
 
 async def process_user_questions(bot, user_id, current_topic):
-    """Обрабатывает отправку вопросов для одного пользователя"""
+    """Обрабатывает отправку вопросов для одного пользователя с проверкой лимита"""
+    # Сначала проверяем дневной лимит
+    stats = get_user_stats(user_id)
+    if not stats:
+        return current_topic
+
+    total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+
+    # Если уже достигнут лимит, пропускаем пользователя
+    if daily_progress >= 5:
+        print(f"Пользователь {user_id} уже достиг дневного лимита ({daily_progress}/5)")
+        return current_topic
+
     # Проверяем, завершена ли текущая тема
     total_questions = get_questions_count_by_topic(current_topic)
     answered_questions = get_user_answered_questions_count(user_id, current_topic)
@@ -155,7 +167,7 @@ async def process_user_questions(bot, user_id, current_topic):
                 await bot.send_message(user_id, "🎉 Поздравляем! Вы завершили все темы!")
             except:
                 pass
-            return None
+            return current_topic
 
     # Проверяем, есть ли вопросы в теме
     topic_questions_count = get_questions_count_by_topic(current_topic)
@@ -164,8 +176,9 @@ async def process_user_questions(bot, user_id, current_topic):
         return current_topic
 
     # Получаем вопросы для текущей темы (только те, на которые еще не ответили)
-    # ИСПРАВЛЕНО: извлекаем ID из кортежей
-    question_ids_result = get_questions_by_topic(user_id, current_topic, 1)
+    # Ограничиваем количество вопросов оставшимся лимитом
+    questions_needed = 5 - daily_progress
+    question_ids_result = get_questions_by_topic(user_id, current_topic, questions_needed)
     question_ids = [row[0] for row in question_ids_result] if question_ids_result else []
 
     if not question_ids:
@@ -177,7 +190,7 @@ async def process_user_questions(bot, user_id, current_topic):
             current_topic = next_topic
 
             # Получаем вопросы для новой темы
-            question_ids_result = get_questions_by_topic(user_id, current_topic, 1)
+            question_ids_result = get_questions_by_topic(user_id, current_topic, questions_needed)
             question_ids = [row[0] for row in question_ids_result] if question_ids_result else []
 
             if not question_ids:
@@ -187,12 +200,18 @@ async def process_user_questions(bot, user_id, current_topic):
             print(f"Все темы завершены для пользователя {user_id}")
             return current_topic
 
+    # Отправляем только первый вопрос (остальные будут по мере ответов)
     question_data = get_question(question_ids[0])
     if question_data:
         caption = f"// {current_topic.capitalize()}"
         try:
             await send_question_to_user(bot, user_id, question_data, caption)
             print(f"Вопрос отправлен пользователю {user_id}")
+
+            # Помечаем вопрос как отправленный (но не отвеченный)
+            # Это нужно, чтобы предотвратить повторную отправку того же вопроса
+            add_answered_question(user_id, question_ids[0])
+
         except Exception as e:
             print(f"Ошибка отправки вопроса пользователю {user_id}: {e}")
     else:

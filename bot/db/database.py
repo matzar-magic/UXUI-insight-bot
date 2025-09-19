@@ -372,6 +372,11 @@ def update_user_daily_progress(user_id):
             (user_id, today)
         )
 
+    # Инвалидируем кэш статистики пользователя
+    with cache_lock:
+        if user_id in user_stats_cache:
+            del user_stats_cache[user_id]
+
     return True
 
 
