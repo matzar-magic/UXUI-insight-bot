@@ -11,7 +11,8 @@ from bot.db.database import (
     reset_daily_progress_if_needed,
     get_user_answered_questions_count,
     add_answered_question, get_next_topic,
-    get_all_users, reset_user_progress
+    get_all_users, reset_user_progress,
+    execute_query
 )
 from bot.config import load_config
 import os
@@ -213,8 +214,9 @@ async def stats_command(message: types.Message):
         # Получаем общее количество вопросов в текущей теме
         total_questions = get_questions_count_by_topic(current_topic)
 
-        # Получаем количество отвеченных вопросов в текущей теме
-        answered_questions = get_user_answered_questions_count(user_id, current_topic)
+        # ИСПРАВЛЕНИЕ: используем progress вместо answered_questions
+        # answered_questions = get_user_answered_questions_count(user_id, current_topic)
+        answered_questions = progress  # Это значение из current_topic_progress
 
         # Рассчитываем процент прогресса по теме
         progress_percent = 0
@@ -452,12 +454,6 @@ async def handle_broadcast_message(message: types.Message):
     # Отключаем состояние рассылки
     del admin_broadcast_state[user_id]
 
-    # Удаляем сообщение с контентом для рассылки сразу
-    try:
-        await message.delete()
-    except:
-        pass
-
     # Получаем всех пользователей
     users = get_all_users()
     total_users = len(users)
@@ -470,17 +466,12 @@ async def handle_broadcast_message(message: types.Message):
     # Функция для отправки сообщения пользователю
     async def send_to_user(user_id):
         try:
-            if message.text:
-                await message.bot.send_message(user_id, message.text)
-            elif message.photo:
-                await message.bot.send_photo(user_id, message.photo[-1].file_id, caption=message.caption)
-            elif message.video:
-                await message.bot.send_video(user_id, message.video.file_id, caption=message.caption)
-            elif message.document:
-                await message.bot.send_document(user_id, message.document.file_id, caption=message.caption)
-            else:
-                await message.bot.send_message(user_id, "❌ Неподдерживаемый тип сообщения в рассылке")
-                return False
+            # Используем copy_message для копирования исходного сообщения
+            await message.bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id
+            )
             return True
         except Exception as e:
             print(f"Ошибка отправки сообщения пользователю {user_id}: {e}")
@@ -678,6 +669,18 @@ async def handle_answer(callback_query: types.CallbackQuery):
         response = f"✅ Правильно\n\n{explanation}"
     else:
         response = f"❌ Неправильно \nПравильный ответ: {correct_option.lower()})\n\n{explanation}"
+
+    # ОБНОВЛЯЕМ ПРОГРЕСС ПО ТЕМЕ
+    # Получаем текущую тему пользователя
+    stats = get_user_stats(user_id)
+    if stats:
+        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+        # Увеличиваем прогресс по теме на 1
+        new_progress = progress + 1
+        execute_query(
+            'UPDATE users SET current_topic_progress = %s WHERE user_id = %s',
+            (new_progress, user_id)
+        )
 
     # Обновляем дневной прогресс
     if not update_user_daily_progress(user_id):
