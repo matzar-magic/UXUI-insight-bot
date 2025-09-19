@@ -203,6 +203,7 @@ async def stats_command(message: types.Message):
     stats = get_user_stats(user_id)
 
     if stats:
+        # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
         total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
 
         # Получаем количество завершенных тем
@@ -291,9 +292,11 @@ async def today_command(message: types.Message):
         await message.answer("Сначала используйте /start")
         return
 
+    # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
+    total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+
     # Проверяем, сколько вопросов уже было сегодня
-    questions_today = get_user_daily_progress(user_id)
-    if questions_today >= 5:
+    if daily_progress >= 5:
         # Удаляем сообщение пользователя с командой /today
         try:
             await message.delete()
@@ -307,8 +310,6 @@ async def today_command(message: types.Message):
 
     # Помечаем сессию как активную
     user_active_sessions[user_id] = True
-
-    total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
 
     # Проверяем, завершена ли текущая тема
     total_questions = get_questions_count_by_topic(current_topic)
@@ -338,7 +339,9 @@ async def today_command(message: types.Message):
         return
 
     # Получаем вопросы для текущей темы (только те, на которые еще не ответили)
-    question_ids = get_questions_by_topic(user_id, current_topic, 5)
+    # ИСПРАВЛЕНО: извлекаем ID из кортежей
+    question_ids_result = get_questions_by_topic(user_id, current_topic, 5)
+    question_ids = [row[0] for row in question_ids_result] if question_ids_result else []
 
     if not question_ids:
         # Нет новых вопросов в текущей теме
@@ -350,7 +353,8 @@ async def today_command(message: types.Message):
             await message.answer(f"🎉 В текущей теме нет новых вопросов! Переходим к следующей теме: {next_topic}")
 
             # Получаем вопросы для новой темы
-            question_ids = get_questions_by_topic(user_id, current_topic, 5)
+            question_ids_result = get_questions_by_topic(user_id, current_topic, 5)
+            question_ids = [row[0] for row in question_ids_result] if question_ids_result else []
 
             if not question_ids:
                 await message.answer(f"❌ В теме '{current_topic}' тоже нет вопросов.")
@@ -510,8 +514,15 @@ async def end_questions_session(message, user_id):
 async def send_next_question(message, user_id):
     """Отправляет следующий вопрос пользователю"""
     # Проверяем дневной лимит
-    questions_today = get_user_daily_progress(user_id)
-    if questions_today >= 5:
+    stats = get_user_stats(user_id)
+    if not stats:
+        user_active_sessions[user_id] = False
+        return
+
+    # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
+    total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+
+    if daily_progress >= 5:
         await end_questions_session(message, user_id)
         return
 
@@ -523,6 +534,7 @@ async def send_next_question(message, user_id):
             user_active_sessions[user_id] = False
             return
 
+        # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
         total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
 
         # Проверяем, не завершена ли текущая тема
@@ -544,7 +556,10 @@ async def send_next_question(message, user_id):
                 return
 
         # Получаем вопросы для текущей темы
-        question_ids = get_questions_by_topic(user_id, current_topic, 5 - questions_today)
+        # ИСПРАВЛЕНО: извлекаем ID из кортежей
+        question_ids_result = get_questions_by_topic(user_id, current_topic, 5 - daily_progress)
+        question_ids = [row[0] for row in question_ids_result] if question_ids_result else []
+
         if not question_ids:
             await end_questions_session(message, user_id)
             return
@@ -557,16 +572,18 @@ async def send_next_question(message, user_id):
 
     if question_data:
         stats = get_user_stats(user_id)
-        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
-        topic_names = {
-            'typography': 'Типографика',
-            'coloristics': 'Колористика',
-            'composition': 'Композиция',
-            'ux_principles': 'UX-принципы',
-            'ui_patterns': 'UI-паттерны',
-        }
-        topic_name = topic_names.get(current_topic, current_topic.capitalize())
-        await send_question(message, question_data, f"// {topic_name}")
+        if stats:
+            # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
+            total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
+            topic_names = {
+                'typography': 'Типографика',
+                'coloristics': 'Колористика',
+                'composition': 'Композиция',
+                'ux_principles': 'UX-принципы',
+                'ui_patterns': 'UI-паттерны',
+            }
+            topic_name = topic_names.get(current_topic, current_topic.capitalize())
+            await send_question(message, question_data, f"// {topic_name}")
     else:
         await message.answer("❌ Не удалось загрузить вопрос. Попробуйте позже.")
         # Снимаем отметку об активной сессии
@@ -657,6 +674,7 @@ async def handle_answer(callback_query: types.CallbackQuery):
     stats = get_user_stats(user_id)
     topic_completed = False
     if stats:
+        # ИСПРАВЛЕНО: распаковываем 6 значений вместо 5
         total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
         total_questions = get_questions_count_by_topic(current_topic)
         answered_questions = get_user_answered_questions_count(user_id, current_topic)

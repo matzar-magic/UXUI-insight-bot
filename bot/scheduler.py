@@ -147,7 +147,9 @@ async def process_user_questions(bot, user_id, current_topic):
         return current_topic
 
     # Получаем вопросы для текущей темы (только те, на которые еще не ответили)
-    question_ids = get_questions_by_topic(user_id, current_topic, 1)
+    # ИСПРАВЛЕНО: извлекаем ID из кортежей
+    question_ids_result = get_questions_by_topic(user_id, current_topic, 1)
+    question_ids = [row[0] for row in question_ids_result] if question_ids_result else []
 
     if not question_ids:
         # Нет новых вопросов в текущей теме
@@ -158,7 +160,8 @@ async def process_user_questions(bot, user_id, current_topic):
             current_topic = next_topic
 
             # Получаем вопросы для новой темы
-            question_ids = get_questions_by_topic(user_id, current_topic, 1)
+            question_ids_result = get_questions_by_topic(user_id, current_topic, 1)
+            question_ids = [row[0] for row in question_ids_result] if question_ids_result else []
 
             if not question_ids:
                 print(f"Нет вопросов в теме {current_topic} для пользователя {user_id}")
