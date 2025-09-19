@@ -201,10 +201,9 @@ async def stats_command(message: types.Message):
 
     user_id = message.from_user.id
     stats = get_user_stats(user_id)
-    daily_progress = get_user_daily_progress(user_id)
 
     if stats:
-        total_correct, current_topic, progress, completed_topics, user_role, _ = stats
+        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
 
         # Получаем количество завершенных тем
         completed_count = len(completed_topics.split(',')) if completed_topics else 0
@@ -309,7 +308,7 @@ async def today_command(message: types.Message):
     # Помечаем сессию как активную
     user_active_sessions[user_id] = True
 
-    total_correct, current_topic, progress, completed_topics, user_role = stats
+    total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
 
     # Проверяем, завершена ли текущая тема
     total_questions = get_questions_count_by_topic(current_topic)
@@ -524,7 +523,7 @@ async def send_next_question(message, user_id):
             user_active_sessions[user_id] = False
             return
 
-        total_correct, current_topic, progress, completed_topics, user_role = stats
+        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
 
         # Проверяем, не завершена ли текущая тема
         total_questions = get_questions_count_by_topic(current_topic)
@@ -558,7 +557,7 @@ async def send_next_question(message, user_id):
 
     if question_data:
         stats = get_user_stats(user_id)
-        total_correct, current_topic, progress, completed_topics, user_role = stats
+        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
         topic_names = {
             'typography': 'Типографика',
             'coloristics': 'Колористика',
@@ -658,7 +657,7 @@ async def handle_answer(callback_query: types.CallbackQuery):
     stats = get_user_stats(user_id)
     topic_completed = False
     if stats:
-        total_correct, current_topic, progress, completed_topics, user_role = stats
+        total_correct, current_topic, progress, completed_topics, user_role, daily_progress = stats
         total_questions = get_questions_count_by_topic(current_topic)
         answered_questions = get_user_answered_questions_count(user_id, current_topic)
 
