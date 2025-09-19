@@ -345,14 +345,21 @@ def get_user_daily_progress(user_id):
 
 
 def update_user_daily_progress(user_id):
-    """Обновляет прогресс пользователя за сегодня"""
+    """Обновляет прогресс пользователя за сегодня с проверкой лимита"""
     today = datetime.now().strftime('%Y-%m-%d')
 
+    # Сначала получаем текущее значение
     result = execute_query(
-        'SELECT 1 FROM daily_progress WHERE user_id = %s AND date = %s',
+        'SELECT questions_asked FROM daily_progress WHERE user_id = %s AND date = %s',
         (user_id, today),
         fetch_one=True
     )
+
+    current_count = result[0] if result else 0
+
+    # Если уже достигнут лимит, не обновляем
+    if current_count >= 5:
+        return False
 
     if result:
         execute_query(
@@ -364,6 +371,8 @@ def update_user_daily_progress(user_id):
             'INSERT INTO daily_progress (user_id, date, questions_asked) VALUES (%s, %s, 1)',
             (user_id, today)
         )
+
+    return True
 
 
 def reset_daily_progress_if_needed():
@@ -520,7 +529,7 @@ def load_questions_from_fs():
         # Выполняем batch вставку всех вопросов
         if questions_to_insert:
             cursor.executemany('''INSERT INTO questions
-                               (category, question_text, image_path, option_a, option_b, option_c, option_d, 
+                               (category, question_text, image_path, option_a, option_b, option_c, option_d,
                                 buttons_count, correct_option, explanation)
                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
                                questions_to_insert)
